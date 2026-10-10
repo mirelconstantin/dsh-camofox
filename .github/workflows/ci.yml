@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No `npm install`: the package declares one optional peer, every test runs
+      # against the source with no dependency, and a peer that is not on the public
+      # registry cannot be installed by a plain `npm ci` anyway.
+      - name: Test
+        run: npm test
+        shell: bash
+
+      # The patch and the manifest must agree with what is committed. A row that
+      # points at a file `files` does not ship installs fine from a link and breaks
+      # from a tarball, so this is checked rather than assumed.
+      - name: Check the bundle patch
+        run: node scripts/check-patch.mjs
+        shell: bash
+
+      # `files` is what npm actually publishes, so the pack list is the release.
+      - name: Check the published contents
+        run: node scripts/pack-check.mjs
+        shell: bash
+
+  pack:
+    name: pack
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Pack
+        run: npm pack --dry-run
+        shell: bash
+
+      # A tarball is what a `plugin add ./x.tgz` install actually reads. Building
+      # it here catches an export that only resolves from the working tree.
+      - name: Build the tarball and install it clean
+        run: |
+          set -euo pipefail
+          npm pack
+          mkdir -p /tmp/consumer
+          cd /tmp/consumer
+          npm init -y >/dev/null 2>&1
+          npm install "$OLDPWD"/dsh-camofox-1.0.0.tgz --no-audit --no-fund
+          node -e "
+            const m = require('dsh-camofox/package.json')
+            const { existsSync } = require('fs')
+            for (const t of Object.values(m.exports)) {
+              if (!existsSync(require.resolve(t, { paths: ['/tmp/consumer/node_modules/dsh-camofox'] }))) {
+                throw new Error('export does not resolve from the installed package: ' + t)
+              }
+            }
+            console.log('every export resolves from the installed tarball')
+          "
+        shell: bash
+
+      # The engine is spawned as a child process and is not part of this package,
+      # so the suite has to be able to run with no browser present at all.
+      - name: Upload the tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-camofox-tarball
+          path: dsh-camofox-*.tgz
+          retention-days: 7

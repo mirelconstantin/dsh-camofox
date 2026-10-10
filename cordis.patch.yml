@@ -1,0 +1,71 @@
+# dsh-camofox — Camoufox browser as a native DeepSeek Harness capability.
+#
+# This layer provides one long-lived Camoufox engine process, eleven
+# first-class browser tools, the system-prompt guidance that tells every model
+# the browser exists, and the screenshot card the human sees.
+#
+# The engine starts with the harness and is killed with it, including the whole
+# process tree. It adopts an already-running engine instead of starting a second
+# one, and reaps an engine left behind by an unclean exit.
+#
+# Plugin paths are relative, so they resolve next to this file. Nothing here
+# resolves through node_modules, which keeps the layer working no matter how the
+# package is linked.
+- insert:
+    # The ONE and only row for this package.
+    #
+    # It has to stay at exactly one. This package declares `dsh.client`, and
+    # @deepseek-ai/dsh-client-modules scans the HOST Loader's live entries for
+    # packages that declare one, resolves each row's module, walks up to the
+    # nearest package.json, and reconciles the sources it finds BY PACKAGE NAME.
+    # One package resolving from more than one live row throws there; at
+    # activation the throw is aggregated and rethrown as a
+    # ClientPackageCompositionError, which FAILS the dsh-client-modules fiber and
+    # leaves the web shell with no window.__ModuleLoader__ at all.
+    #
+    # That is a whole-GUI-down failure, not a degraded one, and the declaration
+    # is per-PACKAGE rather than per-row, so every row of a multi-row package
+    # resolves as a source. Hence: one row, with the tools, the prompt section
+    # and the client anchor mounted as effects inside it.
+    - id: camofox-runtime
+      name: './src/index.js'
+      config:
+        # Where the camofox-browser checkout lives.
+        repoPath: 'C:\Users\mirel\Desktop\GitHub\camofox-browser'
+        entry: 'server.js'
+        # The REST engine this plugin drives.
+        baseUrl: 'http://127.0.0.1:9377'
+        # A real Node executable. The harness itself runs as Electron-as-node, so
+        # leaving this empty relies on an indirection that is easy to break.
+        nodePath: 'C:\Program Files\nodejs\node.exe'
+        # Start the engine when it is not already running.
+        autostart: true
+        startTimeoutMs: 180000
+        requestTimeoutMs: 120000
+        shutdownTimeoutMs: 2000
+        healthIntervalMs: 20000
+        # Restarts tolerated per rolling 60s window, not consecutive failures: a
+        # readiness probe must not be able to reset a crash loop.
+        restartLimit: 3
+        # Browser identity. `userId` is a NAMESPACE, not one shared jar: the
+        # engine userId actually sent is `${userId}~<liveSessionId>` (src/scope.js),
+        # so every DSH session — and every delegated subagent — gets its own
+        # cookie jar and its own tab pool, and cannot close another's tabs.
+        # Cookies do not survive across DSH sessions; that matches the platform's
+        # own browser invariant ("Browser profiles and login state are not
+        # restored from the Session log").
+        # Set perSessionScope: false to restore one shared jar per profile.
+        userId: 'dsh'
+        perSessionScope: true
+        # How long a silent session's browser context is kept before the plugin
+        # closes it. The engine's own reapers also run; this is the backstop for
+        # a session the framework never announced as disposed.
+        scopeIdleMs: 900000
+        # Bounded output so a single tool call cannot flood the context.
+        defaultMaxChars: 20000
+        maxExtractChars: 60000
+        allowEvaluate: true
+        maxTabs: 8
+        maxConcurrentPerUser: 3
+        scrapeConcurrency: 3
+        mirrorAssetLimit: 150

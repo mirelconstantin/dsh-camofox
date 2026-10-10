@@ -1,0 +1,94 @@
+{
+  "name": "dsh-camofox",
+  "version": "1.0.0",
+  "description": "Native Camoufox browser integration for DeepSeek Harness: lifecycle-managed engine, eleven first-class browser tools, site mirroring, and the screenshot card the human sees.",
+  "icon": "./icon.svg",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./tools": "./src/entry-tools.js",
+    "./prompt": "./src/entry-prompt.js",
+    "./mirror": "./src/mirror.js",
+    "./addons": "./src/addons.js",
+    "./client": "./src/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "NOTICE",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "dsh-plugin",
+    "dsh-plugins",
+    "dsh-external",
+    "deepseek-harness-plugin",
+    "codis-plugin",
+    "camofox",
+    "camoufox",
+    "browser",
+    "browser-automation",
+    "scraping",
+    "anti-bot",
+    "headless"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mirelconstantin/dsh-camofox.git"
+  },
+  "homepage": "https://github.com/mirelconstantin/dsh-camofox#readme",
+  "bugs": {
+    "url": "https://github.com/mirelconstantin/dsh-camofox/issues"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "~3.18.4"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-slots"]
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.0-rc.2": "compatible"
+      }
+    }
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "test": "node scripts/unit.mjs && node scripts/paging.mjs && node scripts/tools.mjs && node scripts/addons.mjs && node scripts/errors.mjs && node scripts/snapshots.mjs && node scripts/console.mjs && node scripts/serve.mjs && npm run test:regression && npm run test:packaging && npm run test:release",
+    "test:packaging": "node scripts/packaging.mjs",
+    "test:release": "node scripts/check-patch.mjs && node scripts/pack-check.mjs",
+    "test:regression": "node scripts/regression-scope-sweep.mjs && node scripts/regression-body-deadline.mjs && node scripts/regression-socket-release.mjs && node scripts/regression-slot-release.mjs",
+    "test:unit": "node scripts/unit.mjs && node scripts/tools.mjs",
+    "test:tools": "node scripts/tools.mjs",
+    "test:paging": "node scripts/paging.mjs",
+    "test:addons": "node scripts/addons.mjs",
+    "test:errors": "node scripts/errors.mjs",
+    "test:snapshots": "node scripts/snapshots.mjs",
+    "test:console": "node scripts/console.mjs",
+    "test:serve": "node scripts/serve.mjs",
+    "test:live": "node scripts/live.mjs",
+    "test:smoke": "node scripts/smoke.mjs",
+    "test:lifecycle": "node scripts/lifecycle.mjs"
+  }
+}

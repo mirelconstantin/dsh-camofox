@@ -1,0 +1,16 @@
+# Keep the working tree LF regardless of the machine's core.autocrlf.
+#
+# This repository is a plugin whose files are diffed line by line, hashed to prove
+# that an experiment was reverted, and imported as ES modules. With
+# `core.autocrlf=true` and no file saying otherwise, `git checkout -- <file>`
+# rewrites LF as CRLF, which silently invalidates every byte-for-byte restore check
+# and produces spurious whole-file diffs on Windows.
+* text=auto eol=lf
+
+# Nothing in this plugin is generated, but these must never be line-folded.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.zip binary

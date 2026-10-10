@@ -1,0 +1,51 @@
+dsh-camofox
+Plugin © 2026 dsh-camofox contributors — MIT
+
+This product includes software developed as a DeepSeek Harness plugin.
+
+--------------------------------------------------------------------------------
+Credits — the browser this plugin drives:
+
+Camofox — https://github.com/jo-inc/camofox-browser
+Copyright (c) 2025 Jo, Inc — MIT License
+
+Camofox is the stealth headless browser this plugin is built around: it
+supplies the browser engine, the fingerprinting surface and the anti-bot
+evasion this plugin configures and drives. Every capability this package
+exposes to a model exists because of it.
+
+This package does NOT redistribute Camofox. It declares it as a runtime
+dependency and installs the published npm package, so the terms above apply to
+what an installer receives from that project's own distribution. This NOTICE
+records them here so the credit travels with the plugin.
+
+Camofox is MIT licensed, reproduced in full in the LICENSE file that ships with
+this package.
+
+MIT License
+
+Copyright (c) 2025 Jo, Inc
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------------
+
+The human-facing screenshot card in this package was contributed alongside the
+plugin, under the same MIT terms as the rest of it.
+
+icon.svg is the Pazalo mark.
