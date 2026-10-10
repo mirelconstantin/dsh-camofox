@@ -1,7 +1,7 @@
 {
   "name": "dsh-camofox",
   "version": "1.0.0",
-  "description": "Native Camoufox browser integration for DeepSeek Harness: lifecycle-managed engine, eleven first-class browser tools, site mirroring, and the screenshot card the human sees.",
+  "description": "Native Camoufox browser integration for DeepSeek Harness: lifecycle-managed engine, sixteen first-class browser tools, site mirroring, and the screenshot card the human sees.",
   "icon": "./icon.svg",
   "type": "module",
   "main": "./src/index.js",

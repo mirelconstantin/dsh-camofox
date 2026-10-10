@@ -126,6 +126,23 @@ test('the icon is a real, self-contained image that ships', () => {
   assert.ok(declared.files.includes(declared.icon.replace(/^\.\//, '')), 'the icon must be listed in files, or it is not published')
 })
 
+test('the description counts the tools the plugin actually registers', () => {
+  // This shipped once already: the manifest said "eleven" while sixteen tools were
+  // registered, and the plugin panel — which shows the description verbatim and
+  // nothing else — was the only place the user could see it. Comments and READMEs
+  // do not reach the panel, so the number has to be checked where it is shown.
+  const declared = manifest()
+  const source = readFileSync(join(ROOT, 'src', 'tools.js'), 'utf8')
+  const registered = new Set([...source.matchAll(/^\s{4}name: '(camofox_\w+)'/gm)].map((m) => m[1]))
+  assert.equal(registered.size, 16, `expected 16 registered tools, found ${registered.size}`)
+  for (const word of ['eleven', 'sixteen', 'seventeen', 'fifteen']) {
+    if (declared.description?.toLowerCase().includes(word)) {
+      assert.equal(word, 'sixteen', `package.json description says "${word}" but ${registered.size} tools are registered`)
+    }
+  }
+  assert.match(declared.description ?? '', /sixteen first-class browser tools/, 'the description should state the tool count')
+})
+
 test('the package installs from git with no build permission', () => {
   const declared = manifest()
   // pnpm runs only `prepack` and `prepare` on a git dependency. Either would make
