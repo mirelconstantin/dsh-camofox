@@ -253,7 +253,7 @@ The values worth knowing:
 | Key | Default | Meaning |
 |---|---|---|
 | `repoPath` | `` `${DSH_HOME}/camofox/repo` `` | The camofox-browser checkout |
-| `nodePath` | `process.execPath` | A real Node executable for the engine |
+| `nodePath` | `` (empty) → `process.execPath` | A real Node executable for the engine. Empty means "use whatever runs the harness", which is the Electron binary — the plugin runs it with `ELECTRON_RUN_AS_NODE`, so it usually works. Set this to a plain `node` if the engine will not start |
 | `baseUrl` | `http://127.0.0.1:9377` | The REST engine |
 | `autostart` | `true` | Start the engine when nothing answers |
 | `startTimeoutMs` | `180000` | Readiness budget after a spawn |
@@ -441,6 +441,11 @@ package, which is why `installAddonPlugin` writes them at startup. It adds the
 allowlist entry only when that file already has an object-shaped `plugins` key
 that omits it — a file with no `plugins` key loads every directory, and adding
 one would narrow that.
+
+So this plugin writes into your camofox checkout: `<repoPath>/plugins/dsh-console/`
+for page console capture, and possibly one allowlist entry in
+`<repoPath>/camofox.config.json`. Both are undone when the plugin unloads. Set
+`captureConsole: false` to keep the checkout untouched.
 
 A folder that is missing, or that has no `manifest.json`, is skipped with a log
 line rather than failing the launch. `GET /dsh-addons/status` on the engine

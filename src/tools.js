@@ -956,7 +956,7 @@ export function registerTools(ctx, bridge, config) {
         visible: { type: 'boolean', description: 'waitForSelector: require the element to be visible, not just present.' },
         timeoutMs: { type: 'number', description: 'wait, waitForSelector, waitForUrl and upload: how long to wait, in MILLISECONDS. Defaults to 15000 for waitForSelector and 12000 for upload; pass e.g. 30000 for 30 seconds. Every timeoutMs in this plugin is milliseconds.' },
         dismissConsent: { type: 'boolean', description: 'wait: also dismiss a cookie or consent dialog first.' },
-        paths: { type: 'array', items: { type: 'string' }, description: 'upload: absolute file paths inside the camofox uploads directory.' },
+        paths: { type: 'array', items: { type: 'string' }, description: 'upload: absolute paths to the files to attach, as the engine machine sees them — the engine process runs on this machine, so a local absolute path is right. The engine may refuse paths outside the locations it is allowed to read, in which case it says so and names what it accepted; nothing is uploaded until the call succeeds.' },
         width: { type: 'number', description: 'viewport: width in pixels.' },
         height: { type: 'number', description: 'viewport: height in pixels.' },
       },
