@@ -952,7 +952,13 @@ export class CamofoxEngine {
     const entry = isAbsolute(this.config.entry) ? this.config.entry : join(repo, this.config.entry)
     if (!existsSync(entry)) {
       this.state = ENGINE_STATE.FAILED
-      this.lastError = `camofox engine entry point not found: ${entry}`
+      // Name the remedy, not just the symptom. This is the first thing every new
+      // user hits, because the default `repoPath` is a directory nothing creates,
+      // and "entry point not found" reads like a broken install rather than a
+      // browser that was never cloned.
+      this.lastError = `camofox-browser is not installed at repoPath (looked for ${entry}). `
+        + 'Clone https://github.com/jo-inc/camofox-browser, run npm install in it, and set repoPath '
+        + `to that folder — currently ${repo}. See the Install section of the plugin's README.`
       this.log(this.lastError)
       throw new EngineError(this.lastError, { code: 'engine_missing', retryable: false })
     }
@@ -1130,12 +1136,36 @@ export class CamofoxEngine {
     this.child = null
     this.state = ENGINE_STATE.FAILED
     const executable = this.config.nodePath || process.execPath
+    // An immediate exit has more than one cause, and blaming the wrong one sends
+    // the user to fix the one thing that is already fine. The engine's own stderr
+    // is the evidence — a port already in use, a missing dependency, a syntax
+    // error in the checkout — and it is printed before anything is guessed.
+    const tail = this.#readLogTail()
+    const verdict = /EADDRINUSE|address already in use/i.test(tail)
+      ? `Port ${this.origin} is already taken by another process, so the engine exited at once. `
+        + `Stop whatever is listening there, or point baseUrl at a free port. `
+      : `It was launched with "${executable}", which may not act as a Node runtime in this context. `
+        + `Set nodePath in the camofox-runtime configuration to a real node executable if it does not. `
     return (
-      `the camofox engine process exited immediately without serving anything. ` +
-      `It was launched with "${executable}", which cannot act as a Node runtime in this context. ` +
-      `Set nodePath in the camofox-runtime configuration to a real node executable ` +
-      `(for example "C:\\Program Files\\nodejs\\node.exe") and reload. Log: ${this.logPath}`
+      `the camofox engine process exited immediately without serving anything. ${verdict}` +
+      `${tail === '' ? `Engine log: ${this.logPath}` : `Engine log said:\n${tail}`}`
     )
+  }
+
+  /**
+   * The last few lines of the engine log, for an error the user has to act on.
+   *
+   * @returns {string} the tail, or an empty string when it cannot be read.
+   */
+  #readLogTail() {
+    try {
+      if (!existsSync(this.logPath)) return ''
+      const text = readFileSync(this.logPath, 'utf8').trimEnd()
+      if (text === '') return ''
+      return text.split(/\r?\n/).slice(-12).join('\n')
+    } catch {
+      return ''
+    }
   }
 
   /**

@@ -13,7 +13,7 @@
  *
  * Run with: `node scripts/check-patch.mjs`
  */
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -87,9 +87,41 @@ for (const target of names(source)) {
   }
 }
 
+// Nothing machine-specific may ship. The bundle patch is what every user
+// receives, so a developer's home directory or Node path in it makes the plugin
+// unusable for everyone else while still installing cleanly — the worst kind of
+// failure, because nothing reports it. Defaults live in the schema, which is
+// portable; a personal path belongs in a profile-level patch.
+//
+// The drive-letter pattern must not match a URL scheme: `http://127.0.0.1` has
+// `p:/` in it, and `https://` has `s:/`. A drive letter is a single letter that
+// begins the value, so the check is anchored to the start of a quoted scalar.
+const DRIVE_LETTER = /^\s*['"]?[A-Za-z]:[\\/]/
+const HOME_PATH = /^\s*['"]?(?:[A-Za-z]:[\\/]+)?(?:Users|home)[\\/]+[^'"\\/]+[\\/]/
+
+for (const [index, line] of source.split('\n').entries()) {
+  const value = /^\s*-?\s*(?:[a-zA-Z]+:)\s*(.+?)\s*$/.exec(line)?.[1] ?? null
+  if (value === null) continue
+  if (DRIVE_LETTER.test(value)) {
+    failures.push(`line ${index + 1} hardcodes a drive-letter path: ${line.trim()} — the published patch must work on any machine`)
+  }
+  if (HOME_PATH.test(value)) {
+    failures.push(`line ${index + 1} hardcodes a home directory: ${line.trim()} — use the portable default and let a profile override it`)
+  }
+}
+
+// And nothing in the shipped source may carry the author's own machine.
+for (const entry of readdirSync(join(ROOT, 'src'), { withFileTypes: true })) {
+  if (!entry.isFile() || !entry.name.endsWith('.js')) continue
+  const text = readFileSync(join(ROOT, 'src', entry.name), 'utf8')
+  if (/[A-Za-z]:\\Users\\/i.test(text)) {
+    failures.push(`src/${entry.name} contains an absolute home path, which would only ever be right for one machine`)
+  }
+}
+
 if (failures.length > 0) {
   for (const failure of failures) process.stderr.write(`cordis.patch.yml: ${failure}\n`)
   process.exit(1)
 }
 
-process.stdout.write(`cordis.patch.yml: ${found.length} row (${ids.join(', ')}), every target resolves and ships\n`)
+process.stdout.write(`cordis.patch.yml: ${found.length} row (${ids.join(', ')}), every target resolves and ships, no machine-specific path\n`)

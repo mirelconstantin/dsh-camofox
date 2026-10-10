@@ -372,13 +372,16 @@ async function fetchAsset(bridge, tabId, url, maxBytes, signal) {
       redirect: 'follow',
       signal,
     })
-    const declared = Number(response.headers.get('content-length') ?? 0)
-    if (response.ok && (declared === 0 || declared <= maxBytes)) {
-      const buffer = Buffer.from(await response.arrayBuffer())
-      if (buffer.length <= maxBytes) {
-        return { bytes: buffer, contentType: response.headers.get('content-type') ?? '' }
-      }
-    }
+    // The size cap has to be enforced WHILE the body arrives, not after it.
+    // `content-length` is only a hint: it is absent for every chunked response,
+    // so gating on it (or on `buffer.length` after the fact) means a host that
+    // streams without declaring a length has its whole body buffered in this
+    // process before anything notices it is too big — which is the exact case
+    // the cap exists for. Reading the stream with a running total, and dropping
+    // the connection the moment it passes, bounds the memory instead.
+    if (!response.ok) throw new Error(`asset responded ${response.status}`)
+    const bytes = await readCapped(response, maxBytes)
+    if (bytes !== null) return { bytes, contentType: response.headers.get('content-type') ?? '' }
   } catch {
     /* fall through to the in-page attempt */
   }
@@ -386,11 +389,33 @@ async function fetchAsset(bridge, tabId, url, maxBytes, signal) {
     const expression = `(async () => {
       const response = await fetch(${JSON.stringify(url)}, { credentials: 'include' });
       if (!response.ok) return null;
-      const buffer = await response.arrayBuffer();
-      if (buffer.byteLength > ${maxBytes}) return null;
+      // Count as the body arrives rather than after arrayBuffer(): a streaming
+      // response has no length to check first, so buffering it whole is how a
+      // mirrored page would take the host's memory down.
+      const cap = ${maxBytes};
+      const reader = response.body && response.body.getReader ? response.body.getReader() : null;
+      if (!reader) {
+        const buffer = await response.arrayBuffer();
+        if (buffer.byteLength > cap) return null;
+        let whole = '';
+        const all = new Uint8Array(buffer);
+        for (let i = 0; i < all.length; i += 1) whole += String.fromCharCode(all[i]);
+        return { base64: btoa(whole), contentType: response.headers.get('content-type') || '' };
+      }
+      const chunks = [];
+      let total = 0;
+      for (;;) {
+        const step = await reader.read();
+        if (step.done) break;
+        total += step.value.byteLength;
+        if (total > cap) { try { await reader.cancel(); } catch {} return null; }
+        chunks.push(step.value);
+      }
+      const out = new Uint8Array(total);
+      let at = 0;
+      for (const chunk of chunks) { out.set(chunk, at); at += chunk.byteLength; }
       let binary = '';
-      const view = new Uint8Array(buffer);
-      for (let i = 0; i < view.length; i += 1) binary += String.fromCharCode(view[i]);
+      for (let i = 0; i < out.length; i += 1) binary += String.fromCharCode(out[i]);
       return { base64: btoa(binary), contentType: response.headers.get('content-type') || '' };
     })()`
     const payload = await bridge.evaluate(tabId, expression, signal)
@@ -400,6 +425,47 @@ async function fetchAsset(bridge, tabId, url, maxBytes, signal) {
   } catch {
     return null
   }
+}
+
+/**
+ * Read a response body, giving up the moment it exceeds a cap.
+ *
+ * A declared `content-length` is treated as a fast rejection only, never as
+ * permission: a server can lie about it or omit it entirely, so the stream is
+ * counted regardless. The connection is cancelled at the cap rather than merely
+ * stopped being read, because an abandoned body keeps its socket until it is
+ * explicitly closed.
+ *
+ * @param {Response} response - the response to drain.
+ * @param {number} maxBytes - the largest body worth keeping.
+ * @returns {Promise<Buffer | null>} the body, or null when it was too large.
+ */
+export async function readCapped(response, maxBytes) {
+  const declared = Number(response.headers.get('content-length') ?? 0)
+  if (declared > maxBytes) {
+    void response.body?.cancel().catch(() => {})
+    return null
+  }
+  const reader = response.body?.getReader?.()
+  // No stream available: this is a body that is already buffered, so the only
+  // option left is to read it and check.
+  if (!reader) {
+    const buffer = Buffer.from(await response.arrayBuffer())
+    return buffer.length <= maxBytes ? buffer : null
+  }
+  const chunks = []
+  let total = 0
+  for (;;) {
+    const step = await reader.read()
+    if (step.done) break
+    total += step.value.byteLength
+    if (total > maxBytes) {
+      void reader.cancel().catch(() => {})
+      return null
+    }
+    chunks.push(Buffer.from(step.value))
+  }
+  return Buffer.concat(chunks, total)
 }
 
 /** Attributes whose whole value may be a local reference. */
@@ -539,8 +605,15 @@ export async function mirrorSite(bridge, options) {
     try {
       const response = await fetch(new URL('/robots.txt', origin), { headers: { 'user-agent': FALLBACK_UA }, signal })
       if (response.ok) {
-        rules = parseRobots(await response.text(), 'dsh-camofox')
-        report.robotsRespected = true
+        // Capped for the same reason assets are: a host that streams robots.txt
+        // without a length would otherwise have the whole body buffered here
+        // before the parser saw it. A robots file that will not fit is treated as
+        // unreadable, which is what an absent one already means.
+        const capped = await readCapped(response, ROBOTS_MAX_BYTES)
+        if (capped !== null) {
+          rules = parseRobots(capped.toString('utf8'), 'dsh-camofox')
+          report.robotsRespected = true
+        }
       }
     } catch {
       /* no robots.txt, or it is unreachable: carry on */

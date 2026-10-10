@@ -1,6 +1,6 @@
 # dsh-camofox — Camoufox browser as a native DeepSeek Harness capability.
 #
-# This layer provides one long-lived Camoufox engine process, eleven
+# This layer provides one long-lived Camoufox engine process, sixteen
 # first-class browser tools, the system-prompt guidance that tells every model
 # the browser exists, and the screenshot card the human sees.
 #
@@ -11,6 +11,12 @@
 # Plugin paths are relative, so they resolve next to this file. Nothing here
 # resolves through node_modules, which keeps the layer working no matter how the
 # package is linked.
+#
+# Only values that differ from the shipped defaults are set here. The defaults
+# are the portable ones — `repoPath` resolves to `${DSH_HOME}/camofox/repo` and
+# `nodePath` to `process.execPath` — so a published install works on a machine
+# that shares nothing with the author's. Anything machine-specific belongs in a
+# profile-level patch, not in the bundle that everybody receives.
 - insert:
     # The ONE and only row for this package.
     #
@@ -30,14 +36,10 @@
     - id: camofox-runtime
       name: './src/index.js'
       config:
-        # Where the camofox-browser checkout lives.
-        repoPath: 'C:\Users\mirel\Desktop\GitHub\camofox-browser'
-        entry: 'server.js'
-        # The REST engine this plugin drives.
+        # The REST engine this plugin drives. Loopback only, deliberately: the
+        # engine is unauthenticated unless a key is generated, and it drives a
+        # real browser with a real cookie jar on it.
         baseUrl: 'http://127.0.0.1:9377'
-        # A real Node executable. The harness itself runs as Electron-as-node, so
-        # leaving this empty relies on an indirection that is easy to break.
-        nodePath: 'C:\Program Files\nodejs\node.exe'
         # Start the engine when it is not already running.
         autostart: true
         startTimeoutMs: 180000

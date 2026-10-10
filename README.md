@@ -12,7 +12,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Node-%3E%3D22.19-FFC24D?style=flat-square&logo=node&logoColor=black" alt="Node">
-  <img src="https://img.shields.io/badge/Tools-11-FFC24D?style=flat-square" alt="Tools">
+  <img src="https://img.shields.io/badge/Tools-16-FFC24D?style=flat-square" alt="Tools">
   <img src="https://img.shields.io/badge/Licence-MIT-F0522C?style=flat-square" alt="Licence">
   <img src="https://img.shields.io/badge/Camofox-MIT-F0522C?style=flat-square" alt="Camofox">
 </p>
@@ -23,39 +23,53 @@ Camoufox — <https://github.com/jo-inc/camofox-browser> — Copyright (c) 2025 
 
 Camofox is the stealth browser this plugin is built around: it supplies the engine, the
 fingerprinting surface and the anti-bot evasion that every tool here configures. **This package
-does not redistribute it** — it installs and drives the published `camofox-browser` project — and
-[NOTICE](NOTICE) carries that attribution. See [LICENSE](LICENSE).
+does not redistribute it, and does not download it for you** — it starts and drives a checkout of
+the published [`camofox-browser`](https://github.com/jo-inc/camofox-browser) project, which you
+install yourself in the step below. [NOTICE](NOTICE) carries that attribution. See
+[LICENSE](LICENSE).
 
 ## Install
 
-From the GUI, paste this into **Add plugin**:
-
-```
-dsh-camofox
-```
-
-Or from a terminal:
+**1. Get Camofox.** It is a separate project with its own dependencies, and a bare clone is not
+enough — its `postinstall` also fetches the browser binary:
 
 ```bash
-dsh plugin add dsh-camofox
+git clone https://github.com/jo-inc/camofox-browser
+cd camofox-browser
+npm install
 ```
 
-Camofox also needs a checkout of the browser itself, which this plugin starts, adopts if one is
-already running, and reaps if a previous run left one behind. Point `repoPath` at it in the
-bundle patch, or set `autostart: false` and run your own engine.
+**2. Install this plugin** into a profile. The GUI's **Add plugin** box does this for you; from a
+terminal the profile name is required:
 
-No build step is involved: pnpm runs only `prepack` and `prepare` on a git dependency, and this
-package declares neither.
+```bash
+dsh plugin add dsh-camofox --profile desktop
+```
+
+**3. Point it at the checkout.** The default is `${DSH_HOME}/camofox/repo`, a directory the
+plugin does not create. Either clone there, or set `repoPath` on the `camofox-runtime` row in a
+profile-level patch:
+
+```yaml
+- insert:
+    - id: camofox-runtime
+      name: './src/index.js'
+      config:
+        repoPath: '/absolute/path/to/camofox-browser'
+```
+
+Until this is set the first error is `camofox engine entry point not found: …/server.js`, which
+is this step and nothing else.
 
 <details>
 <summary>Other routes</summary>
 
 | Route | Command |
 | --- | --- |
-| Pinned to a version | `dsh plugin add dsh-camofox@1.0.0` |
-| Pinned to a commit | `dsh plugin add github:mirelconstantin/dsh-camofox#<sha>` |
-| Tarball | `dsh plugin add ./dsh-camofox-1.0.0.tgz` |
-| Local checkout | `dsh plugin add /absolute/path/to/dsh-camofox` |
+| Pinned to a version | `dsh plugin add dsh-camofox@1.0.0 --profile desktop` |
+| Pinned to a commit | `dsh plugin add github:mirelconstantin/dsh-camofox#<sha> --profile desktop` |
+| Tarball | `dsh plugin add ./dsh-camofox-1.0.0.tgz --profile desktop` |
+| Local checkout | `dsh plugin add /absolute/path/to/dsh-camofox --profile desktop` |
 
 </details>
 

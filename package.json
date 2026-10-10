@@ -76,9 +76,9 @@
   },
   "scripts": {
     "test": "node scripts/unit.mjs && node scripts/paging.mjs && node scripts/tools.mjs && node scripts/addons.mjs && node scripts/errors.mjs && node scripts/snapshots.mjs && node scripts/console.mjs && node scripts/serve.mjs && npm run test:regression && npm run test:packaging && npm run test:release",
-    "test:packaging": "node scripts/packaging.mjs",
+    "test:packaging": "node scripts/packaging.mjs && node scripts/tool-surface.mjs && node scripts/watchdog-check.mjs",
     "test:release": "node scripts/check-patch.mjs && node scripts/pack-check.mjs",
-    "test:regression": "node scripts/regression-scope-sweep.mjs && node scripts/regression-body-deadline.mjs && node scripts/regression-socket-release.mjs && node scripts/regression-slot-release.mjs",
+    "test:regression": "node scripts/regression-scope-sweep.mjs && node scripts/regression-body-deadline.mjs && node scripts/regression-socket-release.mjs && node scripts/regression-slot-release.mjs && node scripts/regression-asset-cap.mjs",
     "test:unit": "node scripts/unit.mjs && node scripts/tools.mjs",
     "test:tools": "node scripts/tools.mjs",
     "test:paging": "node scripts/paging.mjs",

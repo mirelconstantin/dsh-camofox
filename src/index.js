@@ -104,7 +104,7 @@ const CONFIG_TYPES = {
  * a value an operator set is its own kind of failure.
  *
  * Everything else under `CAMOFOX_` is left alone: refusing the whole namespace
- * would fail the plugin LOAD — and therefore remove all eleven tools — over a
+ * would fail the plugin LOAD — and therefore remove all sixteen tools — over a
  * harmless passthrough like `CAMOFOX_LOG_LEVEL`.
  */
 const RESERVED_ENV = new Set([
@@ -222,7 +222,7 @@ function buildConfig() {
     })
     return schema
   } catch {
-    // A settings row is never worth losing the eleven tools over.
+    // A settings row is never worth losing the sixteen tools over.
     return STANDARD_SCHEMA_CONFIG
   }
 }

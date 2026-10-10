@@ -3,7 +3,7 @@
  *
  * The previous integration exposed 26 narrow MCP tools that overlapped heavily,
  * ignored cancellation and timeouts, and hid four broken ones behind confident
- * descriptions. These are eleven tools with wide, explicitly bounded jobs:
+ * descriptions. These are sixteen tools with wide, explicitly bounded jobs:
  * each one validates its own arguments, classifies engine failures, and
  * returns a typed canonical value plus bounded model-facing text.
  *
@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { createServer as httpNet } from 'node:http'
 import { spawn as spawnProc } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
-import { SERVE_TTL_MS, isAlive, readRegistry, startServe, stopAll } from './serve.js'
+import { SERVE_TTL_MS, isAlive, readRegistry, startServe, startWatchdog, stopAll } from './serve.js'
 import { CamofoxBridge, SEARCH_MACROS, unwrapEvaluate } from './bridge.js'
 import { EngineError } from './engine.js'
 import { filterInteractive, scopeSnapshot } from './snapshot-filter.js'
@@ -169,12 +169,25 @@ function boundedContent(budget) {
 /**
  * Normalise any thrown value into a short, actionable model-facing message.
  *
+ * The `[action: …]` suffixes are the part that matters: a model that is told only
+ * what went wrong spends the turn guessing. Each one names the next call to make.
+ * A `retryable` engine error gets one too, because that flag was already set on the
+ * error object and never reached the model — so "the engine is temporarily
+ * unavailable" used to read as a dead end when it is the one case worth retrying.
+ *
  * @param {unknown} error - thrown value.
  * @returns {string} the message.
  */
 function explainError(error) {
-  if (error instanceof EngineError) return `${error.message}${error.needsNewTab ? ' [action: open a new tab and continue]' : ''}${error.needsResnapshot ? ' [action: read the page again before interacting]' : ''}`
-  return error instanceof Error ? error.message : String(error)
+  if (!(error instanceof EngineError)) {
+    return error instanceof Error ? error.message : String(error)
+  }
+  const actions = []
+  if (error.needsNewTab) actions.push('open a new tab and continue')
+  if (error.needsResnapshot) actions.push('read the page again before interacting')
+  // Only when nothing more specific applies, so the two never compete.
+  if (actions.length === 0 && error.retryable === true) actions.push('retry the same call once')
+  return actions.length === 0 ? error.message : `${error.message} [action: ${actions.join('; ')}]`
 }
 
 /**
@@ -678,7 +691,7 @@ export function registerTools(ctx, bridge, config) {
     name: 'camofox_open',
     timeoutMs: 180000,
     description:
-      'Open a web page in the Camoufox anti-detection browser and return its tab id. Prefer this over any plain HTTP fetch when a site blocks bots, needs JavaScript, or requires a real user agent. Also the fastest way to test a web app you just changed locally. Accepts a URL or a search macro such as @google_search.',
+      'Open a web page in the Camoufox anti-detection browser and return its tab id. Prefer this over any plain HTTP fetch when a site blocks bots, needs JavaScript, or requires a real user agent. Also the fastest way to test a web app you just changed locally. Accepts a URL, or a search macro plus a query — but for any of the supported engines prefer camofox_search, which does the search and the read in one call; use this tool\'s macro only when you specifically need a waitForSelector or a trace on the results page.',
     parameters: {
       type: 'object',
       properties: {
@@ -758,12 +771,18 @@ export function registerTools(ctx, bridge, config) {
           enum: [...READ_MODES],
           description: 'What to read. Defaults to snapshot.',
         },
-        offset: { type: 'number', description: 'snapshot and transcript: character offset to resume at, using the nextOffset a previous call returned. links: item offset, so nextOffset counts items, not characters. Ignored by text, markdown, html, images and stats.' },
+        offset: { type: 'number', description: 'snapshot: character offset to resume at, using the nextOffset a previous call returned. links: item offset, so nextOffset counts items, not characters. Paging units differ by mode — check offsetUnit in the result before resuming. Ignored by text, markdown, html, images and stats.' },
         maxChars: { type: 'number', description: 'Character budget for this result.' },
         limit: { type: 'number', description: 'Item limit for links and images modes. The engine returns at most 20 images per call.' },
         includeContent: { type: 'boolean', description: 'links and images: also return the same records as a plain text block. Defaults to true; pass false when you only need the structured array.' },
         screenshot: { type: 'boolean', description: 'Ask the engine to include the page PNG alongside the snapshot. Defaults to false; it costs a full-page render and does not display here — use camofox_capture to actually see an image.' },
         includeData: { type: 'boolean', description: 'links or images: include full URLs and inline data. For images this can be very large.' },
+        // These two are implemented in reduceSnapshot and the system prompt
+        // recommends interactive above every other way of handling a long page,
+        // so leaving them out of the schema made the most strongly advised habit
+        // in this plugin the one call it could not legally make.
+        interactive: { type: 'boolean', description: 'snapshot only: drop non-actionable prose and keep every actionable element with its subtree. Refs are not renumbered, so every returned ref stays valid for camofox_act. Cheaper than maxChars on a long page, because it drops content instead of paging through it.' },
+        scope: { type: 'string', description: 'snapshot only: keep only the one subtree whose role or accessible name contains this text, e.g. "navigation", "main", "Search". A scope that matches nothing is an error rather than an empty result.' },
       },
       required: [],
       additionalProperties: false,
@@ -925,8 +944,8 @@ export function registerTools(ctx, bridge, config) {
         text: { type: 'string', description: 'type: the text to enter.' },
         option: { type: 'string', description: 'select: visible option label or HTML value.' },
         key: { type: 'string', description: 'press: key name such as Enter, Escape, Tab, ArrowDown, Control+a.' },
-        direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'scroll: direction.' },
-        amount: { type: 'number', description: 'scroll: pixels to move.' },
+        direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'scroll: direction. Defaults to "down".' },
+        amount: { type: 'number', description: 'scroll: pixels to move. Defaults to 800, maximum 20000. To reach the bottom of a page, prefer repeated scroll or camofox_read with offset rather than one huge value — a value over the maximum is clamped, not rejected.' },
         clear: { type: 'boolean', description: 'type: clear the field first.' },
         pressEnter: { type: 'boolean', description: 'type: submit the form afterwards.' },
         mode: { type: 'string', enum: ['fill', 'keyboard'], description: 'type: fill is fast, keyboard types key by key for rich editors.' },
@@ -935,7 +954,7 @@ export function registerTools(ctx, bridge, config) {
         waitForSelector: { type: 'string', description: 'waitForSelector: CSS selector to wait for.' },
         waitForUrlPattern: { type: 'string', description: 'waitForUrl: regular expression tested against the full page URL, e.g. "/orders/\\\\d+". Use it after an action that navigates within a single-page app, where the URL changes but no load event fires.' },
         visible: { type: 'boolean', description: 'waitForSelector: require the element to be visible, not just present.' },
-        timeoutMs: { type: 'number', description: 'How long to wait for a wait action.' },
+        timeoutMs: { type: 'number', description: 'wait, waitForSelector, waitForUrl and upload: how long to wait, in MILLISECONDS. Defaults to 15000 for waitForSelector and 12000 for upload; pass e.g. 30000 for 30 seconds. Every timeoutMs in this plugin is milliseconds.' },
         dismissConsent: { type: 'boolean', description: 'wait: also dismiss a cookie or consent dialog first.' },
         paths: { type: 'array', items: { type: 'string' }, description: 'upload: absolute file paths inside the camofox uploads directory.' },
         width: { type: 'number', description: 'viewport: width in pixels.' },
@@ -1032,7 +1051,7 @@ export function registerTools(ctx, bridge, config) {
     name: 'camofox_capture',
     timeoutMs: 180000,
     description:
-      'Capture what the page looks like: a PNG screenshot attached to the conversation, or a PDF of the current document. Use it to verify a UI change, compare responsive breakpoints, or keep a visual record. Always pass savePath when the image must outlive the conversation.',
+      'Capture what the page looks like: a PNG screenshot attached to the conversation, or a PDF of the current document. Use it to verify a UI change, compare responsive breakpoints, or keep a visual record. If the current model cannot accept images the result says so in words instead of showing pixels, so always pass savePath when the image has to outlive the conversation.',
     parameters: {
       type: 'object',
       properties: {
@@ -1060,7 +1079,7 @@ export function registerTools(ctx, bridge, config) {
           const last = entries[entries.length - 1]
           if (!last) throw new Error('the engine captured no downloadable resource; the page may not be a document')
           const bytes = decodeDataUrl(last.data ?? last.base64 ?? last.content)
-          const written = writeArtifact(args.savePath ?? `${browser.config.tempDir}\\${tabId}.pdf`, bytes, { overwrite: args.overwrite })
+          const written = writeArtifact(args.savePath ?? join(browser.config.tempDir, `${tabId}.pdf`), bytes, { overwrite: args.overwrite })
           if (written?.refused) throw new Error(`${written.reason}; pass overwrite:true to replace it, or choose another savePath`)
           return {
             kind: 'pdf',
@@ -1144,6 +1163,15 @@ export function registerTools(ctx, bridge, config) {
             'camofox_eval is disabled by the allowEvaluate configuration setting, so you may not run JavaScript of your own in a page. camofox_read modes text/markdown/html, camofox_scrape in selector mode, and waitForSelector still run this bundle\'s own fixed scripts.',
           )
         }
+        // `expression` is the one required argument whose absence would otherwise
+        // reach the engine as `undefined` and be evaluated as a script with no code
+        // in it — the failure the sibling tools already guard against. A model
+        // that sends no expression gets told what to send instead.
+        if (typeof args.expression !== 'string' || args.expression.trim() === '') {
+          throw new Error(
+            'camofox_eval needs an expression; pass a JavaScript expression string such as document.title. It runs in the page, so it must be an expression, not a statement list.',
+          )
+        }
         const tabId = browser.resolveTabId(args.tabId, 'camofox_eval')
         const payload = await browser.evaluate(tabId, args.expression, exec.signal)
         const value = unwrapEvaluate(payload)
@@ -1167,7 +1195,7 @@ export function registerTools(ctx, bridge, config) {
     name: 'camofox_search',
     timeoutMs: 180000,
     description:
-      'Run a search on Google, YouTube, Amazon, Reddit, Wikipedia, X, Yelp, Spotify, Netflix, LinkedIn, Instagram, TikTok or Twitch through the anti-detection browser and return the results page already read. One call instead of open plus read.',
+      'Run a search on Google, YouTube, Amazon, Reddit, Wikipedia, X, Yelp, Spotify, Netflix, LinkedIn, Instagram, TikTok or Twitch through the anti-detection browser and return the results page already read, plus a parsed link list. Use this instead of a plain search-engine fetch when the site blocks bots, when you need the session\'s login state, or when you intend to act on the results. One call instead of camofox_open plus camofox_read.',
     parameters: {
       type: 'object',
       properties: {
@@ -1222,15 +1250,15 @@ export function registerTools(ctx, bridge, config) {
     parameters: {
       type: 'object',
       properties: {
-        urls: { type: 'array', items: { type: 'string' }, description: 'Pages to extract from.' },
-        discoverFrom: { type: 'string', description: 'Optional page to read links from when you do not have the URLs yet.' },
+        urls: { type: 'array', items: { type: 'string' }, description: 'Pages to extract from. Pass urls OR discoverFrom — one of the two is required, and the call fails with neither.' },
+        discoverFrom: { type: 'string', description: 'Page to read links from when you do not have the URLs yet. Pass this OR urls — one of the two is required.' },
         linkFilter: { type: 'string', description: 'Only follow links whose href contains this text, when discovering URLs.' },
         schema: {
           type: 'object',
           description:
             'JSON Schema with type "object" and a properties map. Give each property a "selector" (CSS selector, or ":title" / ":url"), and optionally "attr", "all" and "type" ("string" | "number" | "boolean"). Use "required" for fields that must resolve.',
         },
-        maxItems: { type: 'number', description: 'How many records to produce. Defaults to the number of URLs.' },
+        maxItems: { type: 'number', description: 'How many records to produce. Defaults to the number of URLs, maximum 500.' },
         outputPath: { type: 'string', description: 'Absolute path for newline-delimited JSON results. Strongly recommended for more than a handful of records.' },
         overwrite: { type: 'boolean', description: 'Allow replacing a file that already exists at outputPath. Defaults to true, and the result always says whether it replaced something. Pass false to be refused instead.' },
         sessionKey: { type: 'string', description: 'Optional label applied to every tab this tool opens, so they group together in camofox_tabs. All pages already share this session\'s cookies, including any login you did; the label changes organisation only.' },
@@ -1375,12 +1403,12 @@ export function registerTools(ctx, bridge, config) {
       properties: {
         url: { type: 'string', description: 'Entry URL to start from.' },
         outDir: { type: 'string', description: 'Absolute folder to write the copy into. It is created if missing.' },
-        maxPages: { type: 'number', description: 'Maximum number of pages to copy. Defaults to 20.' },
-        maxDepth: { type: 'number', description: 'How many link levels to follow from the entry URL. 0 copies only that page.' },
+        maxPages: { type: 'number', description: 'Maximum number of pages to copy. Defaults to 20, maximum 500.' },
+        maxDepth: { type: 'number', description: 'How many link levels to follow from the entry URL. 0 copies only that page; maximum 10.' },
         includeAssets: { type: 'boolean', description: 'Download stylesheets, scripts, fonts and images. Defaults to true.' },
         sameOrigin: { type: 'boolean', description: 'Restrict copied pages to the entry origin. Defaults to true.' },
         respectRobots: { type: 'boolean', description: 'Read and honour robots.txt disallow rules. Defaults to true.' },
-        maxAssetBytes: { type: 'number', description: 'Skip any single asset larger than this. Defaults to 8 MB.' },
+        maxAssetBytes: { type: 'number', description: 'Skip any single asset larger than this. Defaults to 8 MB, maximum 200 MB. An asset that streams without declaring a size is dropped once it passes this cap, rather than buffered first.' },
       },
       required: ['url', 'outDir'],
       additionalProperties: false,
@@ -1408,7 +1436,9 @@ export function registerTools(ctx, bridge, config) {
           log: (message) => browser.engine.log(`[mirror] ${message}`),
         })
         return {
-          ...report,
+          // `content` first, and the long arrays sampled: this result is budgeted,
+          // and a budget cut from the end used to drop the "Open X to browse the
+          // copy" line — the one thing the model needs from it.
           content: [
             `Mirrored ${report.pagesWritten} page(s) into ${report.outDir}.`,
             `Assets: ${report.assetsWritten} written, ${report.assetsSkipped} skipped.`,
@@ -1417,6 +1447,11 @@ export function registerTools(ctx, bridge, config) {
           ]
             .filter(Boolean)
             .join('\n'),
+          ...report,
+          pages: report.pages.slice(0, 20),
+          pagesTotal: report.pages.length,
+          skipped: report.skipped.slice(0, 20),
+          skippedTotal: report.skipped.length,
         }
       })
     },
@@ -1426,7 +1461,7 @@ export function registerTools(ctx, bridge, config) {
     name: 'camofox_tabs',
     timeoutMs: 30000,
     description:
-      'Inspect and tidy the tabs belonging to this session. Every tab here shares one cookie jar, and no other DSH session or subagent can list or close them. Use it when a tool result says more than one tab is open and you need to pick one, or when you want to free the browser. Closing every tab also clears this session\'s cookies.',
+      'Inspect and tidy the tabs belonging to this session. Every tab here shares one cookie jar, and no other DSH session or subagent can list or close them. Use it whenever any camofox tool fails with "needs a tabId", or when you want to see or free this session\'s tabs. Closing every tab also clears this session\'s cookies.',
     parameters: {
       type: 'object',
       properties: {
@@ -1618,6 +1653,14 @@ export function registerTools(ctx, bridge, config) {
           setTimeout: globalThis.setTimeout,
           clearTimeout: globalThis.clearTimeout,
         })
+
+        // The child stops itself on the clock, but a child that outlives its own
+        // timer — because it was SIGSTOPped, or because the machine slept across
+        // the deadline — leaves nothing but this to answer for it. The watchdog is
+        // detached and holds itself open by polling, so it also covers servers
+        // started after this call. Its absence used to make the three-layer
+        // guarantee in the README two layers, in silence.
+        startWatchdog({ stateDir, ttlMs, spawn: spawnProc, nodePath: process.execPath })
 
         return {
           action: 'start',
@@ -1854,7 +1897,7 @@ export function registerTools(ctx, bridge, config) {
     name: 'camofox_transcript',
     timeoutMs: 240000,
     description:
-      'Get the spoken transcript of a YouTube video as text, with its title. Use it to absorb a talk, lecture, tutorial or interview without watching it, then read long sections with camofox_eval-free paging through maxChars and offset.',
+      'Get the spoken transcript of a YouTube video as text, with its title. Use it to absorb a talk, lecture, tutorial or interview without watching it. For a long video, page through it with maxChars and offset exactly as this tool returned them; you do not need camofox_eval.',
     parameters: {
       type: 'object',
       properties: {

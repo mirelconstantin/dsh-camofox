@@ -690,7 +690,7 @@ export class CamofoxBridge {
    * This is the single chokepoint every caller-supplied tab id passes through —
    * `resolveTabId` is what each read, act, capture, eval and close calls before
    * it touches the engine — so the ownership check belongs here rather than in
-   * eleven tools.
+   * sixteen tools.
    *
    * A tab id this scope does not own is REFUSED, not resolved: without the
    * check a session that learned another session's id from any side channel
