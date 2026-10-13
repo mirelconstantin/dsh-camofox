@@ -334,6 +334,147 @@ test('a 401 caused by a CONFIGURED key is still reported', async () => {
   }
 })
 
+test('a 403 is retried without the token exactly like a 401', async () => {
+  const seen = []
+  const server = createServer((req, res) => {
+    const auth = req.headers.authorization
+    seen.push({ url: req.url, auth: auth ?? null })
+    if (req.url.startsWith('/health')) {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{"ok":true}')
+      return
+    }
+    // A gated engine may refuse the credential outright rather than report it
+    // absent, and `fromResponse` already folds 403 into the same error as 401.
+    if (auth) {
+      res.writeHead(403, { 'content-type': 'application/json' })
+      res.end('{"error":"forbidden"}')
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end('{"ok":true}')
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  const engine = new CamofoxEngine({
+    config: resolveConfig({ baseUrl: `http://127.0.0.1:${port}`, stateDir: mkdtempSync(join(tmpdir(), 'reg-403-')), autostart: false }),
+    log: () => {},
+  })
+  try {
+    const payload = await engine.request('POST', '/tabs', {})
+    assert.deepEqual(payload, { ok: true })
+    const calls = seen.filter((entry) => !entry.url.startsWith('/health'))
+    assert.equal(calls.length, 2, 'the 403 was not retried exactly once')
+    assert.ok(calls[0].auth, 'the generated token was never offered')
+    assert.equal(calls[1].auth, null, 'the retry still carried the rejected token')
+  } finally {
+    await engine.dispose()
+    server.close()
+  }
+})
+
+test('a 403 from a CONFIGURED key is still reported', async () => {
+  const server = createServer((req, res) => {
+    res.writeHead(403, { 'content-type': 'application/json' })
+    res.end('{"error":"forbidden"}')
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  const engine = new CamofoxEngine({
+    config: resolveConfig({ baseUrl: `http://127.0.0.1:${port}`, stateDir: mkdtempSync(join(tmpdir(), 'reg-403b-')), autostart: false, accessKey: 'configured-key' }),
+    log: () => {},
+  })
+  try {
+    await assert.rejects(() => engine.request('POST', '/tabs', {}), /rejected our credentials/)
+  } finally {
+    await engine.dispose()
+    server.close()
+  }
+})
+
+test('adopting an engine re-offers the token a cooldown had withheld', async () => {
+  const seen = []
+  const server = createServer((req, res) => {
+    const auth = req.headers.authorization
+    seen.push({ url: req.url, auth: auth ?? null })
+    // `/health` is exempt from the engine's access-key gate, so it answers
+    // whether or not the key was offered — which is what makes the withheld
+    // token visible to the assertion below. The stamp is `camoufox`, the name
+    // `server.js` puts in every health document.
+    if (req.url.startsWith('/health')) {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{"ok":true,"engine":"camoufox"}')
+      return
+    }
+    if (!auth) {
+      res.writeHead(401, { 'content-type': 'application/json' })
+      res.end('{"error":"Unauthorized"}')
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end('{"ok":true}')
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  const engine = new CamofoxEngine({
+    config: resolveConfig({ baseUrl: `http://127.0.0.1:${port}`, stateDir: mkdtempSync(join(tmpdir(), 'reg-adopt-token-')), autostart: false }),
+    log: () => {},
+  })
+  try {
+    // A cooldown earned against a former engine. Adoption used to leave this
+    // armed, so an engine that had once rejected our key stayed unreachable and
+    // every call after it failed inside its own window.
+    engine.unauthenticatedUntil = Date.now() + 300000
+    engine.tokenOffered = false
+    assert.equal(await engine.ensureReady(), true, 'the engine answered health but was not adopted')
+    assert.equal(engine.owned, false, 'the adopted engine was reported as ours')
+    assert.equal(engine.tokenOffered, true, 'adoption left the generated token withheld')
+    assert.equal(engine.unauthenticatedUntil, 0, 'adoption left a stale cooldown armed')
+
+    // The withheld token is what made every post-adoption call fail, so the call
+    // must now carry it and reach a gated route.
+    const seenCount = seen.length
+    await engine.request('POST', '/tabs', {})
+    assert.ok(seen.slice(seenCount).at(-1).auth, 'the adopted call went out without the generated token')
+  } finally {
+    await engine.dispose()
+    server.close()
+  }
+})
+
+test('the unauthenticated cooldown is configurable and clamps its bounds', async () => {
+  assert.equal(resolveConfig({}).unauthenticatedCooldownMs, 300000)
+  assert.equal(resolveConfig({ unauthenticatedCooldownMs: 5000 }).unauthenticatedCooldownMs, 5000)
+  assert.equal(resolveConfig({ unauthenticatedCooldownMs: 1 }).unauthenticatedCooldownMs, 1000)
+  assert.equal(resolveConfig({ unauthenticatedCooldownMs: 99_999_999 }).unauthenticatedCooldownMs, 3600000)
+})
+
+test('the configured cooldown is the window the 401 branch arms', async () => {
+  const server = createServer((req, res) => {
+    if (req.url.startsWith('/health')) {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{"ok":true}')
+      return
+    }
+    res.writeHead(401, { 'content-type': 'application/json' })
+    res.end('{"error":"unauthorized"}')
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  const engine = new CamofoxEngine({
+    config: resolveConfig({ baseUrl: `http://127.0.0.1:${port}`, stateDir: mkdtempSync(join(tmpdir(), 'reg-cooldown-cfg-')), autostart: false, unauthenticatedCooldownMs: 12345 }),
+    log: () => {},
+  })
+  try {
+    await assert.rejects(() => engine.request('POST', '/tabs', {}), /rejected our credentials/)
+    const armedFor = engine.unauthenticatedUntil - Date.now()
+    assert.ok(armedFor > 11000 && armedFor <= 12345, `the cooldown was armed for ${armedFor}ms instead of the configured 12345ms`)
+  } finally {
+    await engine.dispose()
+    server.close()
+  }
+})
+
 test('an adoption overtaken by dispose reports stopped and leaks nothing', async () => {
   // Slow enough that dispose() wins the race, exactly like the real failure.
   //

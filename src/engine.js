@@ -102,9 +102,6 @@ const RESTART_COOLDOWN_MS = 60000
  */
 const DEGRADED_MISS_TRIGGER = 2
 
-/** How long a generated access key is withheld after an engine rejects it. */
-const UNAUTHENTICATED_COOLDOWN_MS = 300000
-
 /**
  * Report one signal's cancellation onto another controller.
  *
@@ -511,6 +508,15 @@ export class CamofoxEngine {
         await this.#waitForPortFree()
       } else {
         this.owned = false
+        // A cooldown earned against a former engine must not follow us onto the
+        // one we just adopted, for the same reason the spawn path clears it: an
+        // engine we reach has already accepted this key at least once, and
+        // withholding the header here would 401 every route for the rest of the
+        // window. Adoption is the one bring-up branch that used to skip this, so
+        // an engine whose key matched ours but had once rejected it stayed
+        // unreachable — and every call then failed inside its own cooldown.
+        this.unauthenticatedUntil = 0
+        this.tokenOffered = true
         return this.#markReady('adopted an already-running engine')
       }
     }
@@ -1425,16 +1431,22 @@ export class CamofoxEngine {
     if (!response.ok) {
       const failure = await EngineError.fromResponse(response)
       // An engine somebody else started may have been given a key we cannot
-      // know. A 401 from a CONFIGURED key is a real misconfiguration and is
-      // reported as such; a 401 from OUR generated key just means the adoption
+      // know. A rejection from a CONFIGURED key is a real misconfiguration and
+      // is reported as such; one from OUR generated key just means the adoption
       // has to go on without it.
-      if (failure.status === 401 && this.accessKey && !this.accessKeyConfigured && this.#presentToken) {
+      //
+      // Both statuses are covered because they mean the same thing to this
+      // engine: `fromResponse` already folds 401 and 403 into a single
+      // `unauthorized` error, so testing only 401 left a 403 with no recovery
+      // at all — the one answer a gated engine can give when the credential is
+      // refused rather than absent.
+      if ((failure.status === 401 || failure.status === 403) && this.accessKey && !this.accessKeyConfigured && this.#presentToken) {
         // `tokenOffered` is the gate: inside the cooldown it is false, so
-        // exactly one credential-free retry happens and the retry's own 401
-        // propagates instead of recursing.
+        // exactly one credential-free retry happens and the retry's own
+        // rejection propagates instead of recursing.
         this.tokenOffered = false
-        this.unauthenticatedUntil = now() + UNAUTHENTICATED_COOLDOWN_MS
-        this.log(`the camofox engine at ${this.origin} rejected our generated access key; retrying without one for ${UNAUTHENTICATED_COOLDOWN_MS / 1000}s`)
+        this.unauthenticatedUntil = now() + this.config.unauthenticatedCooldownMs
+        this.log(`the camofox engine at ${this.origin} rejected our generated access key; retrying without one for ${this.config.unauthenticatedCooldownMs / 1000}s`)
         return await this.request(method, path, body, options)
       }
       throw failure
@@ -1948,6 +1960,11 @@ export function resolveConfig(raw = {}) {
     // Escape hatch for an engine somebody else runs and gates itself; it keeps
     // the generated key out of the child we spawn.
     allowUnauthenticated: raw.allowUnauthenticated === true,
+    // How long a rejected generated key is withheld before it is offered again.
+    // A deployment whose engine is restarted under a new key every few minutes
+    // needs this shorter than the five minutes it used to be hardcoded to: the
+    // window is a tax paid by every call made while it runs.
+    unauthenticatedCooldownMs: clampInt(raw.unauthenticatedCooldownMs, 300000, 1000, 3600000),
     apiKey: typeof raw.apiKey === 'string' ? raw.apiKey : '',
     engineEnv: isRecord(raw.engineEnv) ? { ...raw.engineEnv } : {},
     // Behaviour knobs surfaced to tools.
