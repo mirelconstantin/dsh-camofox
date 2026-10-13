@@ -21,11 +21,11 @@ export const inject = ['tools', SERVICE]
  * Returns nothing on purpose: Cordis reads whatever a plugin body returns as
  * an effect, and a list of tool names is neither a disposer nor a promise.
  *
- * @param {any} ctx - Cordis context (unused; injection is declared above).
+ * @param {any} ctx - Cordis context.
  * @returns {void} nothing.
  */
 export function apply(ctx) {
-  const names = registerBrowserTools(ctx)
+  const names = registerBrowserTools(ctx, ctx.get(SERVICE))
   const logger = typeof ctx.logger === 'function' ? ctx.logger(name) : null
   const summary = `registered ${names.length} browser tool(s): ${names.join(', ')}`
   if (logger) logger.info(summary)

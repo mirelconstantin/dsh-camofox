@@ -12,6 +12,7 @@ import { CamofoxEngine, resolveConfig } from './engine.js'
 import { browserGuidance } from './prompt.js'
 import { resolveScope } from './scope.js'
 import { registerTools } from './tools.js'
+import { stopAll } from './serve.js'
 import { configValidator, describeError } from './util.js'
 
 /** Name of the Cordis service this plugin provides. */
@@ -19,6 +20,19 @@ export const SERVICE = 'camofox'
 
 /** Plugin identity. */
 export const name = 'dsh-camofox'
+
+/**
+ * Services this row reads: the tool registry and the system-prompt assembler.
+ *
+ * The tools and the prompt used to be separate Loader rows that each declared
+ * their own dependencies. Collapsing them into one row makes this list the only
+ * place the dependencies can be declared, and a declared service must be declared
+ * here: Cordis resolves `ctx.<service>` against the fiber's inject set, so reading
+ * an undeclared one throws `cannot get property "<service>" without inject` and
+ * fails the whole entry. `camofox` is absent on purpose — this row provides it,
+ * and a plugin cannot inject its own service.
+ */
+export const inject = ['tools', 'systemPrompt']
 
 /** Configuration defaults; the shape below is what `cordis.patch.yml` may set. */
 const CONFIG_DEFAULTS = {
@@ -40,6 +54,7 @@ const CONFIG_DEFAULTS = {
   scopeIdleMs: 900000,
   accessKey: '',
   allowUnauthenticated: false,
+  unauthenticatedCooldownMs: 300000,
   apiKey: '',
   engineEnv: {},
   defaultMaxChars: 20000,
@@ -77,6 +92,7 @@ const CONFIG_TYPES = {
   scopeIdleMs: 'number',
   accessKey: 'string',
   allowUnauthenticated: 'boolean',
+  unauthenticatedCooldownMs: 'number',
   apiKey: 'string',
   engineEnv: 'record',
   defaultMaxChars: 'number',
@@ -338,23 +354,37 @@ export async function apply(ctx, rawConfig) {
   // passed on purpose: a temporarily unreachable browser must not dispose the
   // tool and prompt registrations, because a service that comes and goes would
   // take the whole tool surface with it.
-  ctx.effect(() => ctx.provide(SERVICE, runtime), `ctx.provide(${SERVICE})`)
+  //
+  // The two surfaces below are registered INSIDE this effect, not as siblings.
+  // A `ctx.effect` body runs when its turn comes, so a sibling effect reads the
+  // service store before this one has provided into it: `ctx.get(SERVICE)` returns
+  // nothing and the tools refuse to mount. One effect makes the order the
+  // registration order, which is the order the surfaces depend on. The two stay
+  // independently disposable because each registration returns its own disposer.
+  ctx.effect(() => {
+    const disposers = [ctx.provide(SERVICE, runtime)]
 
-  // The tools and the prompt section used to be their own Loader rows, so a
-  // configuration reload of one would not tear the engine down for the other.
-  // That separation is gone, and deliberately: this package declares `dsh.client`,
-  // and the client-module scanner reconciles sources BY PACKAGE NAME across the
-  // HOST Loader's live rows — one package resolving from more than one row throws
-  // there, is rethrown at activation as a ClientPackageCompositionError, and
-  // leaves the web shell with no `window.__ModuleLoader__`. That is a whole-GUI-down
-  // failure, not a degraded one. So the bundle is ONE row and the two surfaces are
-  // effects inside it, which still keeps them independently disposable.
-  if (typeof ctx.tools?.register === 'function') {
-    ctx.effect(() => registerBrowserTools(ctx), 'camofox.tools')
-  }
-  if (typeof ctx.systemPrompt?.section === 'function') {
-    ctx.effect(() => registerBrowserPrompt(ctx), 'camofox.prompt')
-  }
+    // The tools and the prompt section used to be their own Loader rows, so a
+    // configuration reload of one would not tear the engine down for the other.
+    // That separation is gone, and deliberately: this package declares `dsh.client`,
+    // and the client-module scanner reconciles sources BY PACKAGE NAME across the
+    // HOST Loader's live rows — one package resolving from more than one row throws
+    // there, is rethrown at activation as a ClientPackageCompositionError, and
+    // leaves the web shell with no `window.__ModuleLoader__`. That is a whole-GUI-down
+    // failure, not a degraded one. So the bundle is ONE row and the two surfaces are
+    // effects inside it.
+    if (typeof ctx.tools?.register === 'function') {
+      disposers.push(registerBrowserTools(ctx, runtime))
+    }
+    if (typeof ctx.systemPrompt?.section === 'function') {
+      disposers.push(registerBrowserPrompt(ctx))
+    }
+
+    return () => {
+      // Reverse order: the surfaces release before the service they read goes.
+      for (const dispose of disposers.reverse()) dispose?.()
+    }
+  }, 'camofox.service')
 
   // A synchronous backstop for the paths where Cordis disposal cannot run: an
   // explicit exit, an uncaught exception, or a signal.
@@ -430,12 +460,12 @@ export async function apply(ctx, rawConfig) {
 /**
  * Mount the model-facing tools on top of the browser service.
  *
- * @param {any} ctx - Cordis context providing `tools` and `camofox`.
+ * @param {any} ctx - Cordis context providing `tools`.
+ * @param {{ bridge: CamofoxBridge, engine: CamofoxEngine }} runtime - the mounted browser runtime.
  * @returns {string[]} the registered tool names.
  */
-export function registerBrowserTools(ctx) {
-  const runtime = ctx.get(SERVICE)
-  if (!runtime) throw new Error(`dsh-camofox: the ${SERVICE} service is not mounted`)
+export function registerBrowserTools(ctx, runtime) {
+  if (!runtime) throw new Error(`dsh-camofox: the ${SERVICE} runtime is missing`)
   return registerTools(ctx, runtime.bridge, runtime.engine.config)
 }
 
