@@ -38,6 +38,8 @@ export const inject = ['tools', 'systemPrompt']
 const CONFIG_DEFAULTS = {
   baseUrl: 'http://127.0.0.1:9377',
   repoPath: '',
+  bootstrap: true,
+  bootstrapTimeoutMs: 1800000,
   entry: 'server.js',
   nodePath: '',
   stateDir: '',
@@ -76,6 +78,8 @@ const CONFIG_DEFAULTS = {
 const CONFIG_TYPES = {
   baseUrl: 'string',
   repoPath: 'string',
+  bootstrap: 'boolean',
+  bootstrapTimeoutMs: 'number',
   entry: 'string',
   nodePath: 'string',
   stateDir: 'string',

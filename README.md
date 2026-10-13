@@ -23,32 +23,37 @@ Camoufox — <https://github.com/jo-inc/camofox-browser> — Copyright (c) 2025 
 
 Camofox is the stealth browser this plugin is built around: it supplies the engine, the
 fingerprinting surface and the anti-bot evasion that every tool here configures. **This package
-does not redistribute it, and does not download it for you** — it starts and drives a checkout of
-the published [`camofox-browser`](https://github.com/jo-inc/camofox-browser) project, which you
-install yourself in the step below. [NOTICE](NOTICE) carries that attribution. See
-[LICENSE](LICENSE).
+does not redistribute it.** The plugin installs the engine itself on first run from
+[`@askjo/camofox-browser`](https://www.npmjs.com/package/@askjo/camofox-browser), the npm
+publication of the [`camofox-browser`](https://github.com/jo-inc/camofox-browser) project.
+[NOTICE](NOTICE) carries that attribution. See [LICENSE](LICENSE).
+
+The engine is fetched, not bundled: it is ~175 npm packages, and its browser binary is about
+1.06 GB and is cached once per machine outside the install directory.
 
 ## Install
-
-**1. Get Camofox.** It is a separate project with its own dependencies, and a bare clone is not
-enough — its `postinstall` also fetches the browser binary:
-
-```bash
-git clone https://github.com/jo-inc/camofox-browser
-cd camofox-browser
-npm install
-```
-
-**2. Install this plugin** into a profile. The GUI's **Add plugin** box does this for you; from a
-terminal the profile name is required:
 
 ```bash
 dsh plugin add dsh-camofox --profile desktop
 ```
 
-**3. Point it at the checkout.** The default is `${DSH_HOME}/camofox/repo`, a directory the
-plugin does not create. Either clone there, or set `repoPath` on the `camofox-runtime` row in a
-profile-level patch:
+That is the whole installation. The first browser tool call installs the engine into
+`${DSH_HOME}/camofox/repo` — about a minute and a half on a wired connection, most of it
+network — and every later call reuses it. Nothing else is needed: no clone, no second
+`npm install`, no `repoPath`.
+
+The engine needs **Node 22 or newer**, network access to the npm registry, and about
+1.2 GB of free disk for the first run. Its browser binary (~1.06 GB) is cached once per
+machine, outside the install directory, so the second harness on the same machine pays
+nothing.
+
+<details>
+<summary>Bringing your own engine, or an air-gapped install</summary>
+
+The plugin only ever installs into the default location, so a `repoPath` you set is a path
+you manage and the plugin will never write to it. Point it at an existing
+[`camofox-browser`](https://github.com/jo-inc/camofox-browser) checkout — a git clone, or
+the `node_modules/@askjo/camofox-browser` directory of an npm install — and it is used as-is:
 
 ```yaml
 - insert:
@@ -58,17 +63,19 @@ profile-level patch:
         repoPath: '/absolute/path/to/camofox-browser'
 ```
 
-Until this is set the first error is `camofox engine entry point not found: …/server.js`, which
-is this step and nothing else.
+To turn the automatic install off entirely, set `bootstrap: false`. A machine with no
+registry access then reports where the engine is expected instead of attempting one.
+
+</details>
 
 <details>
 <summary>Other routes</summary>
 
 | Route | Command |
 | --- | --- |
-| Pinned to a version | `dsh plugin add dsh-camofox@1.0.0 --profile desktop` |
+| Pinned to a version | `dsh plugin add dsh-camofox@1.1.1 --profile desktop` |
 | Pinned to a commit | `dsh plugin add github:mirelconstantin/dsh-camofox#<sha> --profile desktop` |
-| Tarball | `dsh plugin add ./dsh-camofox-1.0.0.tgz --profile desktop` |
+| Tarball | `dsh plugin add ./dsh-camofox-1.1.1.tgz --profile desktop` |
 | Local checkout | `dsh plugin add /absolute/path/to/dsh-camofox --profile desktop` |
 
 </details>
@@ -252,7 +259,9 @@ The values worth knowing:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `repoPath` | `` `${DSH_HOME}/camofox/repo` `` | The camofox-browser checkout |
+| `repoPath` | `` `${DSH_HOME}/camofox/repo` `` | Where the engine lives. The default is created on first run; a path you set is used as-is and never written to |
+| `bootstrap` | `true` | Install the engine on first run when the default location is empty. Never applies to a `repoPath` you set. Set `false` to require a pre-existing engine |
+| `bootstrapTimeoutMs` | `1800000` | Budget for that first-run install, which downloads ~175 packages and a ~1.06 GB browser binary. Separate from `startTimeoutMs` because it is a different kind of wait |
 | `nodePath` | `` (empty) → `process.execPath` | A real Node executable for the engine. Empty means "use whatever runs the harness", which is the Electron binary — the plugin runs it with `ELECTRON_RUN_AS_NODE`, so it usually works. Set this to a plain `node` if the engine will not start |
 | `baseUrl` | `http://127.0.0.1:9377` | The REST engine |
 | `autostart` | `true` | Start the engine when nothing answers |

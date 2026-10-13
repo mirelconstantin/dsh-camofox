@@ -57,6 +57,10 @@ jobs:
 
       # A tarball is what a `plugin add ./x.tgz` install actually reads. Building
       # it here catches an export that only resolves from the working tree.
+      #
+      # `npm pack` names the tarball after the manifest version, so the version is
+      # read from the manifest instead of written here: a hardcoded filename broke
+      # the job on every version bump, and only on a release.
       - name: Build the tarball and install it clean
         run: |
           set -euo pipefail
@@ -64,7 +68,8 @@ jobs:
           mkdir -p /tmp/consumer
           cd /tmp/consumer
           npm init -y >/dev/null 2>&1
-          npm install "$OLDPWD"/dsh-camofox-1.0.0.tgz --no-audit --no-fund
+          TARBALL=$(ls "$OLDPWD"/dsh-camofox-*.tgz)
+          npm install "$TARBALL" --no-audit --no-fund
           node -e "
             const m = require('dsh-camofox/package.json')
             const { existsSync } = require('fs')
@@ -73,7 +78,7 @@ jobs:
                 throw new Error('export does not resolve from the installed package: ' + t)
               }
             }
-            console.log('every export resolves from the installed tarball')
+            console.log('every export resolves from the installed tarball; installed version ' + m.version)
           "
         shell: bash
 

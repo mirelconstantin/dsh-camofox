@@ -15,6 +15,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { configChunkSize } from './addons.js'
+import { ensureEngine } from './bootstrap.js'
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
@@ -948,6 +949,49 @@ export class CamofoxEngine {
    *
    * @returns {Promise<void>} resolves once the child exists.
    */
+  /**
+   * Locate the engine entry point, installing the engine when it is absent.
+   *
+   * Never throws: a failed install is reported through the returned path and the caller's
+   * `engine_missing` error, so a machine with no network keeps a plugin that explains
+   * itself rather than one that cannot start.
+   *
+   * @param {string} repo - resolved `repoPath`.
+   * @returns {Promise<string>} the entry path; callers check whether it exists.
+   */
+  async #ensureEnginePresent(repo) {
+    if (isAbsolute(this.config.entry)) return this.config.entry
+    const configured = join(repo, this.config.entry)
+    if (existsSync(configured)) return configured
+    if (!this.config.bootstrap) return configured
+
+    // Long on purpose and separate from `startTimeoutMs`: a first run installs ~175
+    // packages and fetches a browser binary over the network, which is not the same work
+    // as waiting for a process to bind a port.
+    const deadline = withDeadline([this.shutdown.signal], this.config.bootstrapTimeoutMs)
+    try {
+      const result = await ensureEngine({
+        repoPath: repo,
+        entry: this.config.entry,
+        npmPath: this.config.nodePath || process.execPath,
+        signal: deadline.signal,
+        log: (message) => this.log(message),
+        timeoutMs: this.config.bootstrapTimeoutMs,
+      })
+      if (!result.ok) {
+        this.log(`the camofox engine could not be installed: ${result.reason ?? 'npm install did not produce an entry point'}`)
+      } else if (result.installed) {
+        this.log(`camofox engine installed at ${result.entry}${result.browserReady ? '' : ' (the Camoufox browser binary is still downloading; the first launch will fetch it)'}`)
+      }
+      return result.entry
+    } catch (error) {
+      this.log(`the camofox engine could not be installed: ${describeError(error)}`)
+      return configured
+    } finally {
+      deadline.dispose()
+    }
+  }
+
   async #spawnEngine() {
     // The last gate before a process exists. Teardown can land between the
     // caller's `stopped` check and here, and a child spawned after `dispose()`
@@ -955,18 +999,20 @@ export class CamofoxEngine {
     // second dispose returns immediately at `if (this.stopped) return`.
     if (this.stopped) throw new EngineError('the camofox integration is shutting down', { code: 'shutting_down' })
     const repo = resolve(this.config.repoPath)
-    const entry = isAbsolute(this.config.entry) ? this.config.entry : join(repo, this.config.entry)
+    // An engine this plugin did not install is installed here rather than described. The
+    // default location is created on first run, so a new machine reaches a browser with no
+    // clone and no npm command; a `repoPath` the operator chose is never created for them,
+    // because a typo there is reported as a typo.
+    const entry = await this.#ensureEnginePresent(repo)
     if (!existsSync(entry)) {
       this.state = ENGINE_STATE.FAILED
-      // Name the remedy, not just the symptom. This is the first thing every new
-      // user hits, because the default `repoPath` is a directory nothing creates,
-      // and "entry point not found" reads like a broken install rather than a
-      // browser that was never cloned.
-      this.lastError = `camofox-browser is not installed at repoPath (looked for ${entry}). `
-        + 'Clone https://github.com/jo-inc/camofox-browser, run npm install in it, and set repoPath '
-        + `to that folder — currently ${repo}. See the Install section of the plugin's README.`
+      this.lastError = `no camofox-browser engine at ${entry}. `
+        + (this.config.bootstrap
+          ? `The automatic install into ${repo} did not produce one; set repoPath to an existing camofox-browser checkout to install it yourself. `
+          : `Set repoPath to a camofox-browser checkout, or set bootstrap: true to let the plugin install one into ${repo}. `)
+        + 'See the Install section of the plugin\'s README.'
       this.log(this.lastError)
-      throw new EngineError(this.lastError, { code: 'engine_missing', retryable: false })
+      throw new EngineError(this.lastError, { code: 'engine_missing', retryable: true })
     }
 
     mkdirSync(dirname(this.logPath), { recursive: true })
@@ -1921,6 +1967,16 @@ export function resolveConfig(raw = {}) {
   return {
     baseUrl,
     repoPath: typeof raw.repoPath === 'string' && raw.repoPath ? resolve(raw.repoPath) : join(home, 'camofox', 'repo'),
+    // Install the engine on first run when the default location is empty, so a new
+    // machine reaches a browser without cloning anything. Never applies to a `repoPath`
+    // the operator set: a path they chose is one they manage. Set false to require a
+    // pre-existing checkout — an air-gapped deployment, or one that supplies the engine
+    // from its own mirror.
+    bootstrap: raw.bootstrap !== false,
+    // Separate from `startTimeoutMs` on purpose: the first run installs ~175 packages and
+    // downloads a ~1.06 GB browser binary, which is a different job from waiting for a
+    // process to bind a port, and a budget tuned for the second starves the first.
+    bootstrapTimeoutMs: clampInt(raw.bootstrapTimeoutMs, 1800000, 30000, 7200000),
     entry: typeof raw.entry === 'string' && raw.entry ? raw.entry : 'server.js',
     nodePath: typeof raw.nodePath === 'string' && raw.nodePath ? raw.nodePath : '',
     stateDir,
