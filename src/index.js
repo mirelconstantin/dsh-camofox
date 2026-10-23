@@ -7,6 +7,7 @@
 
 import { GENERATED_MARKER, installAddonPlugin, writeEnginePlugin } from './addons.js'
 import { CONSOLE_PLUGIN_NAME, GENERATED_CONSOLE_MARKER, consolePluginSource } from './console-capture.js'
+import { LIFECYCLE_PLUGIN_NAME, GENERATED_LIFECYCLE_MARKER, lifecyclePluginSource } from './lifecycle-plugin.js'
 import { CamofoxBridge } from './bridge.js'
 import { CamofoxEngine, resolveConfig } from './engine.js'
 import { browserGuidance } from './prompt.js'
@@ -72,6 +73,8 @@ const CONFIG_DEFAULTS = {
   disableDefaultAddons: false,
   captureConsole: true,
   consoleMaxEntries: 200,
+  eagerStart: false,
+  engineIdleMs: 0,
 }
 
 /** Expected primitive type per configuration key. */
@@ -112,6 +115,8 @@ const CONFIG_TYPES = {
   disableDefaultAddons: 'boolean',
   captureConsole: 'boolean',
   consoleMaxEntries: 'number',
+  eagerStart: 'boolean',
+  engineIdleMs: 'number',
 }
 
 /**
@@ -314,6 +319,16 @@ function createRuntime(ctx, rawConfig) {
     if (!written.installed) log(`browser console capture is NOT installed: ${written.reason}`)
   }
 
+  // The lifecycle plugin ensures the engine and any spawned browser processes
+  // terminate immediately whenever the parent DeepSeek Harness process terminates.
+  const lifecycleWritten = writeEnginePlugin(
+    config.repoPath,
+    LIFECYCLE_PLUGIN_NAME,
+    () => lifecyclePluginSource(),
+    GENERATED_LIFECYCLE_MARKER,
+  )
+  if (!lifecycleWritten.installed) log(`browser lifecycle guard is NOT installed: ${lifecycleWritten.reason}`)
+
   // A file server from an earlier run is stopped BEFORE anything else looks at the
   // machine. Two reasons: it holds a port nobody asked to keep held, and the
   // whole guarantee this plugin makes about serving is "nothing survives the
@@ -439,26 +454,25 @@ export async function apply(ctx, rawConfig) {
     'camofox.scopeDispose',
   )
 
-  // Start the engine without waiting for it. Activation must not block on a
-  // browser launch: the loader awaits this body, and everything that injects
-  // `camofox` — the tools, the prompt section — stays pending until it
-  // resolves. The process is spawned right now, so it still comes up with the
-  // harness and still dies with it; the first tool call simply waits for the
-  // engine to answer instead of the whole harness waiting for the browser.
-  runtime
-    .start()
-    .then(
-      (ready) => {
-        if (ready) return
-        runtime.log(`browser engine is not ready yet: ${runtime.engine.lastError ?? 'unknown reason'}`)
-      },
-      (error) => {
-        runtime.log(`browser engine failed to start: ${describeError(error)}`)
-      },
-    )
-    // The outcome is already reported by this point; anything a report handler
-    // itself could throw must not become an unhandled rejection in the host.
-    .catch(() => {})
+  // If eagerStart is true, start the engine immediately on boot without waiting for it.
+  // By default (eagerStart: false), the browser engine is launched lazily on first tool use
+  // via request()'s ensureReady(), avoiding any wasted memory when the browser is not in use.
+  if (runtime.engine.config.eagerStart) {
+    runtime
+      .start()
+      .then(
+        (ready) => {
+          if (ready) return
+          runtime.log(`browser engine is not ready yet: ${runtime.engine.lastError ?? 'unknown reason'}`)
+        },
+        (error) => {
+          runtime.log(`browser engine failed to start: ${describeError(error)}`)
+        },
+      )
+      // The outcome is already reported by this point; anything a report handler
+      // itself could throw must not become an unhandled rejection in the host.
+      .catch(() => {})
+  }
 }
 
 /**

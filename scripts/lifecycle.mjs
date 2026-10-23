@@ -12,9 +12,13 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { CamofoxEngine, resolveConfig } from '../src/engine.js'
 import { CamofoxBridge } from '../src/bridge.js'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { killProcessTree } from '../src/util.js'
 
-const repoPath = process.argv[2] ?? 'C:\\Users\\mirel\\Desktop\\GitHub\\camofox-browser'
+const defaultRepo = process.env.CAMOFOX_REPO ?? (process.env.DSH_HOME ? join(process.env.DSH_HOME, 'camofox', 'repo') : join(homedir(), '.dsh', 'camofox', 'repo'))
+const repoPath = process.argv[2] ?? defaultRepo
 const port = Number(process.env.CAMOFOX_TEST_PORT ?? 9477)
 const baseUrl = `http://127.0.0.1:${port}`
 const lines = []
@@ -57,7 +61,7 @@ function alive(pid) {
   }
 }
 
-const stateDir = `${process.env.TEMP ?? '.'}\\dsh-camofox-lifecycle-${process.pid}`
+const stateDir = join(tmpdir(), `dsh-camofox-lifecycle-${process.pid}`)
 const makeEngine = () =>
   new CamofoxEngine({
     config: resolveConfig({
@@ -92,7 +96,7 @@ try {
   })
 
   await step('a lock file records the supervised process', async () => {
-    const lockPath = `${stateDir}\\engine.json`
+    const lockPath = join(stateDir, 'engine.json')
     assert(existsSync(lockPath), 'no lock file was written')
     const record = JSON.parse(readFileSync(lockPath, 'utf8'))
     assert(record.pid === childPid, `lock file records pid ${record.pid}, expected ${childPid}`)
@@ -132,14 +136,14 @@ try {
   })
 
   await step('the lock file is removed on disposal', async () => {
-    assert(!existsSync(`${stateDir}\\engine.json`), 'the lock file outlived the engine')
+    assert(!existsSync(join(stateDir, 'engine.json')), 'the lock file outlived the engine')
     return 'clean'
   })
 
   await step('a stale lock is reaped instead of being adopted', async () => {
     // A real earlier run: a separate process starts an engine and dies without
     // disposing, leaving a live engine and a lock file naming it.
-    const orphan = spawnSync(process.execPath, ['scripts/orphan.mjs', baseUrl, stateDir], {
+    const orphan = spawnSync(process.execPath, ['scripts/orphan.mjs', baseUrl, stateDir, repoPath], {
       encoding: 'utf8',
       timeout: 180000,
       windowsHide: true,
@@ -164,14 +168,14 @@ try {
     // from the outside. Sharing the state directory must never make this
     // process treat a healthy, owned engine as a leftover.
     let enginePid = 0
-    const child = spawn(process.execPath, ['scripts/live-owner.mjs', baseUrl, stateDir], {
+    const child = spawn(process.execPath, ['scripts/live-owner.mjs', baseUrl, stateDir, repoPath], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     try {
       enginePid = await new Promise((resolve, reject) => {
         let buffer = ''
-        const timer = setTimeout(() => reject(new Error('the live owner never reported a pid')), 180000)
+        const timer = setTimeout(() => reject(new Error('the live owner never reported a pid')), 60000)
         child.stdout.on('data', (chunk) => {
           buffer += chunk
           const line = buffer.split(/\r?\n/).find((value) => /^\d+$/.test(value.trim()))
@@ -180,7 +184,16 @@ try {
             resolve(Number(line.trim()))
           }
         })
-        child.on('error', reject)
+        child.on('error', (err) => {
+          clearTimeout(timer)
+          reject(err)
+        })
+        child.on('exit', (code) => {
+          if (code !== 0) {
+            clearTimeout(timer)
+            reject(new Error(`live owner exited with code ${code}`))
+          }
+        })
       })
       assert(alive(enginePid), 'the live owner reported a pid that is not running')
 
@@ -195,12 +208,12 @@ try {
       // The simulator is deliberately detached and survives its owner, so the
       // test has to clean it up or every later step sees a taken port.
       child.kill()
-      spawnSync('taskkill', ['/PID', String(enginePid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
-      spawnSync('cmd', ['/c', 'del', '/f', '/q', `${stateDir}\\engine.json`], { stdio: 'ignore', windowsHide: true })
+      if (enginePid) killProcessTree(enginePid, spawnSync)
+      try { rmSync(join(stateDir, 'engine.json'), { force: true }) } catch {}
     }
   })
 
-await step('an engine with no lock of ours is adopted and never killed', async () => {
+  await step('an engine with no lock of ours is adopted and never killed', async () => {
     const owner = new CamofoxEngine({
       config: resolveConfig({
         baseUrl,
@@ -217,7 +230,7 @@ await step('an engine with no lock of ours is adopted and never killed', async (
     const foreignPid = owner.child?.pid
     // Drop our lock so the engine looks like somebody else's deliberate
     // instance; adoption must then be completely non-destructive.
-    spawnSync('cmd', ['/c', 'del', '/f', '/q', `${stateDir}\\engine.json`], { stdio: 'ignore', windowsHide: true })
+    try { rmSync(join(stateDir, 'engine.json'), { force: true }) } catch {}
 
     const guest = makeEngine()
     assert(await guest.ensureReady(), 'the guest supervisor did not adopt the engine')
@@ -239,7 +252,7 @@ await step('an engine with no lock of ours is adopted and never killed', async (
 
   await step('a missing engine entry point fails loudly, not silently', async () => {
     const broken = new CamofoxEngine({
-      config: resolveConfig({ baseUrl, repoPath: 'C:\\nope\\does-not-exist', autostart: true, stateDir, userId: 'dsh-broken' }),
+      config: resolveConfig({ baseUrl, repoPath: join(tmpdir(), 'nope-does-not-exist'), autostart: true, stateDir, userId: 'dsh-broken' }),
       log: () => {},
     })
     const ready = await broken.ensureReady()
@@ -262,8 +275,8 @@ await step('an engine with no lock of ours is adopted and never killed', async (
   })
 } finally {
   if (first) await first.dispose()
-  spawnSync('taskkill', ['/PID', String(childPid ?? 0), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
-  spawnSync('cmd', ['/c', 'rmdir', '/s', '/q', stateDir], { stdio: 'ignore', windowsHide: true })
+  if (childPid) killProcessTree(childPid, spawnSync)
+  try { rmSync(stateDir, { recursive: true, force: true }) } catch {}
 }
 
 lines.push('')

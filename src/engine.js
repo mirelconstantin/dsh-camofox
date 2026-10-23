@@ -54,10 +54,15 @@ const INHERITED_ENV = [
   'APPDATA',
   'COMPUTERNAME',
   'ComSpec',
+  'DBUS_SESSION_BUS_ADDRESS',
+  'DISPLAY',
+  'HOME',
   'HOMEDRIVE',
   'HOMEPATH',
   'LANG',
+  'LD_LIBRARY_PATH',
   'LOCALAPPDATA',
+  'LOGNAME',
   'NUMBER_OF_PROCESSORS',
   'OS',
   'PATH',
@@ -72,14 +77,25 @@ const INHERITED_ENV = [
   'ProgramW6432',
   'PSModulePath',
   'PUBLIC',
+  'SHELL',
+  'SSL_CERT_DIR',
+  'SSL_CERT_FILE',
   'SystemDrive',
   'SystemRoot',
   'TEMP',
+  'TERM',
   'TMP',
+  'USER',
   'USERDOMAIN',
   'USERNAME',
   'USERPROFILE',
+  'WAYLAND_DISPLAY',
   'WINDIR',
+  'XAUTHORITY',
+  'XDG_CACHE_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'XDG_RUNTIME_DIR',
 ]
 
 /**
@@ -375,7 +391,7 @@ export class CamofoxEngine {
     this.procs = {
       spawn: (command, args, options) => spawn(command, args, options),
       alive: (pid) => isProcessAlive(pid, spawnSync),
-      kill: (pid) => killProcessTree(pid, spawnSync),
+      kill: (pid, signal) => killProcessTree(pid, spawnSync, signal),
       rotate: (path, maxBytes) => rotateLogFile(path, maxBytes),
     }
     /**
@@ -707,7 +723,16 @@ export class CamofoxEngine {
     if (!child || !child.pid) return true
     SESSION_PIDS.delete(child.pid)
     this.procs.kill(child.pid)
-    return this.#waitForExit(child.pid, this.config.shutdownTimeoutMs)
+    let gone = await this.#waitForExit(child.pid, this.config.shutdownTimeoutMs)
+    if (!gone) {
+      try {
+        this.procs.kill(child.pid, 'SIGKILL')
+      } catch {
+        /* already gone */
+      }
+      gone = await this.#waitForExit(child.pid, Math.min(1000, this.config.shutdownTimeoutMs))
+    }
+    return gone
   }
 
   /**
@@ -1033,6 +1058,7 @@ export class CamofoxEngine {
       ...(this.config.engineEnv ?? {}),
       CAMOFOX_PORT: String(this.port),
       CAMOFOX_DSH_LOG: this.logPath,
+      CAMOFOX_PARENT_PID: String(process.pid),
       // `allowUnauthenticated` exists for an engine somebody else starts and
       // gates itself, so the key is never handed to a child we spawn.
       ...(this.accessKey && !this.config.allowUnauthenticated ? { CAMOFOX_ACCESS_KEY: this.accessKey } : {}),
@@ -1050,7 +1076,7 @@ export class CamofoxEngine {
     const child = this.procs.spawn(this.config.nodePath || process.execPath, [entry], {
       cwd: repo,
       env,
-      stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'inherit'],
+      stdio: ['pipe', logFd ?? 'ignore', logFd ?? 'inherit'],
       windowsHide: true,
       // Detached on purpose. Measured on this machine: a non-detached child
       // dies the moment its spawning process exits, which would make the engine
@@ -1693,7 +1719,7 @@ export class CamofoxEngine {
       if (!gone) {
         this.log(`camofox engine pid ${pid} survived the tree kill; sending a direct kill`)
         try {
-          child.kill('SIGKILL')
+          this.procs.kill(pid, 'SIGKILL')
         } catch {
           /* already gone */
         }
@@ -1740,6 +1766,38 @@ export class CamofoxEngine {
   }
 
   /**
+   * Stop the running engine process without marking the supervisor as permanently shut down.
+   *
+   * @returns {Promise<void>} resolves when the process has exited.
+   */
+  async stop() {
+    if (this.watcher) {
+      clearInterval(this.watcher)
+      this.watcher = null
+    }
+    this.state = ENGINE_STATE.STOPPING
+    const child = this.child
+    if (child && child.pid) {
+      const pid = child.pid
+      SESSION_PIDS.delete(pid)
+      this.procs.kill(pid)
+      let gone = await this.#waitForExit(pid, this.config.shutdownTimeoutMs)
+      if (!gone) {
+        try {
+          this.procs.kill(pid, 'SIGKILL')
+        } catch {}
+        gone = await this.#waitForExit(pid, Math.min(1000, this.config.shutdownTimeoutMs))
+      }
+      this.child = null
+      this.state = ENGINE_STATE.STOPPED
+      this.#clearLock()
+    } else {
+      this.state = ENGINE_STATE.STOPPED
+      this.#clearLock()
+    }
+  }
+
+  /**
    * Install a synchronous last-resort kill for process exits.
    *
    * Cordis disposal already owns the normal shutdown path; this covers the
@@ -1751,21 +1809,29 @@ export class CamofoxEngine {
    * @returns {() => void} a disposer removing the handlers.
    */
   installExitGuard(proc = process) {
-    const kill = () => {
+    const kill = (sig) => {
       const pid = this.child?.pid
       // The tree, not the single process: an engine always has children, and
       // killing only the parent would leave a browser nobody supervises.
-      if (pid) this.procs.kill(pid)
+      if (pid) this.procs.kill(pid, sig)
     }
+    const onExit = () => kill('SIGKILL')
     const onSignal = () => {
-      kill()
+      kill('SIGKILL')
+      if (proc === process) {
+        try {
+          process.exit(1)
+        } catch {
+          /* already exiting */
+        }
+      }
     }
-    proc.on('exit', kill)
+    proc.on('exit', onExit)
     proc.once('SIGINT', onSignal)
     proc.once('SIGTERM', onSignal)
     proc.once('SIGHUP', onSignal)
     return () => {
-      proc.removeListener('exit', kill)
+      proc.removeListener('exit', onExit)
       proc.removeListener('SIGINT', onSignal)
       proc.removeListener('SIGTERM', onSignal)
       proc.removeListener('SIGHUP', onSignal)
@@ -1982,6 +2048,8 @@ export function resolveConfig(raw = {}) {
     stateDir,
     logFile: typeof raw.logFile === 'string' && raw.logFile ? resolve(raw.logFile) : join(stateDir, 'engine.log'),
     autostart: raw.autostart !== false,
+    eagerStart: raw.eagerStart === true,
+    engineIdleMs: clampInt(raw.engineIdleMs, 0, 0, 86400000),
     startTimeoutMs: clampInt(raw.startTimeoutMs, 180000, 5000, 1800000),
     // Budget for an engine we already own but cannot reach. It has no fresh
     // process to wait for, so a start that is merely slow gets a much shorter

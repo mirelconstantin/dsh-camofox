@@ -9,7 +9,7 @@
  * @module dsh-camofox/util
  */
 
-import { existsSync, renameSync, statSync, unlinkSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs'
 
 /** @returns {boolean} whether the runtime is Windows. */
 export const isWindows = process.platform === 'win32'
@@ -265,27 +265,129 @@ export function configValidator(defaults, types) {
 }
 
 /**
- * Remove a Windows process tree. `taskkill /T` reaches grandchildren, which is
- * what a browser engine always has.
+ * Find all descendant PIDs of a process on Linux by parsing /proc.
+ *
+ * @param {number} rootPid - ancestor process id.
+ * @returns {number[]} list of descendant PIDs.
+ */
+export function getDescendantPids(rootPid) {
+  const descendants = []
+  if (!Number.isInteger(rootPid) || rootPid <= 0 || isWindows) return descendants
+  try {
+    const ppidMap = new Map()
+    const entries = readdirSync('/proc')
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i]
+      if (entry.charCodeAt(0) < 48 || entry.charCodeAt(0) > 57) continue
+      const pid = Number(entry)
+      if (!Number.isInteger(pid) || pid <= 0) continue
+      try {
+        const statStr = readFileSync(`/proc/${pid}/stat`, 'utf8')
+        const rightParen = statStr.lastIndexOf(')')
+        if (rightParen === -1) continue
+        const rest = statStr.slice(rightParen + 2).trimStart()
+        const spaceIdx = rest.indexOf(' ')
+        if (spaceIdx === -1) continue
+        const spaceIdx2 = rest.indexOf(' ', spaceIdx + 1)
+        const ppidStr = spaceIdx2 === -1 ? rest.slice(spaceIdx + 1) : rest.slice(spaceIdx + 1, spaceIdx2)
+        const ppid = Number(ppidStr)
+        if (Number.isInteger(ppid) && ppid > 0) {
+          let list = ppidMap.get(ppid)
+          if (!list) {
+            list = []
+            ppidMap.set(ppid, list)
+          }
+          list.push(pid)
+        }
+      } catch {
+        /* process may have exited while scanning */
+      }
+    }
+    const queue = [rootPid]
+    const seen = new Set([rootPid])
+    while (queue.length > 0) {
+      const current = queue.shift()
+      const children = ppidMap.get(current)
+      if (children) {
+        for (let i = 0; i < children.length; i++) {
+          const child = children[i]
+          if (!seen.has(child)) {
+            seen.add(child)
+            descendants.push(child)
+            queue.push(child)
+          }
+        }
+      }
+    }
+  } catch {
+    /* /proc not accessible */
+  }
+  return descendants
+}
+
+/**
+ * Remove a process tree.
+ * On Windows, `taskkill /T /F` reaches grandchildren.
+ * On Linux, process group signaling, `/proc` descendant scanning, and `pkill`
+ * ensure all child, grandchild, and browser processes are terminated.
  *
  * @param {number} pid - process id.
- * @param {import('node:child_process').SpawnSyncReturns<Buffer>} spawnSync - injected for testing.
+ * @param {import('node:child_process').SpawnSyncReturns<Buffer>} [spawnSync] - injected for testing.
+ * @param {NodeJS.Signals | string} [signal='SIGTERM'] - signal to send.
  * @returns {boolean} whether the kill was reported as successful.
  */
-export function killProcessTree(pid, spawnSync) {
+export function killProcessTree(pid, spawnSync, signal = 'SIGTERM') {
   if (!Number.isInteger(pid) || pid <= 0) return false
   try {
     if (isWindows) {
-      const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
-        windowsHide: true,
-        stdio: 'ignore',
-        timeout: 15000,
-      })
-      return result.status === 0
+      if (typeof spawnSync === 'function') {
+        const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+          windowsHide: true,
+          stdio: 'ignore',
+          timeout: 15000,
+        })
+        return result?.status === 0
+      }
+      return false
     }
-    const result = spawnSync('pkill', ['-TERM', '-P', String(pid)], { stdio: 'ignore', timeout: 10000 })
-    void result
-    process.kill(pid, 'SIGTERM')
+
+    // On Linux/POSIX:
+    // 1. Gather all descendants (children, grandchildren, browser processes)
+    const descendants = getDescendantPids(pid)
+
+    // 2. Kill the process group (since child is spawned detached: true, PGID == pid)
+    try {
+      process.kill(-pid, signal)
+    } catch {
+      /* process group might not exist */
+    }
+
+    // 3. Kill all descendants in reverse topological order (leaves first)
+    for (let i = descendants.length - 1; i >= 0; i--) {
+      try {
+        process.kill(descendants[i], signal)
+      } catch {
+        /* already dead */
+      }
+    }
+
+    // 4. Fallback pkill for any process not caught in /proc scan
+    if (typeof spawnSync === 'function') {
+      try {
+        const sigName = String(signal).replace(/^SIG/, '')
+        spawnSync('pkill', [`-${sigName}`, '-P', String(pid)], { stdio: 'ignore', timeout: 5000 })
+      } catch {
+        /* pkill failed or missing */
+      }
+    }
+
+    // 5. Kill the root process itself
+    try {
+      process.kill(pid, signal)
+    } catch {
+      /* already dead */
+    }
+
     return true
   } catch {
     return false
@@ -296,13 +398,25 @@ export function killProcessTree(pid, spawnSync) {
  * Test whether a process id currently exists.
  *
  * @param {number} pid - process id.
- * @param {import('node:child_process').SpawnSyncReturns<string>} spawnSync - injected for testing.
+ * @param {import('node:child_process').SpawnSyncReturns<string>} [spawnSync] - injected for testing.
  * @returns {boolean} whether the pid is live.
  */
 export function isProcessAlive(pid, spawnSync) {
   if (!Number.isInteger(pid) || pid <= 0) return false
   try {
     process.kill(pid, 0)
+    if (!isWindows) {
+      try {
+        const statStr = readFileSync(`/proc/${pid}/stat`, 'utf8')
+        const rightParen = statStr.lastIndexOf(')')
+        if (rightParen !== -1) {
+          const state = statStr.charAt(rightParen + 2)
+          if (state === 'Z') return false // zombie process is dead
+        }
+      } catch {
+        /* process may have exited */
+      }
+    }
     return true
   } catch (error) {
     if (error && (error.code === 'EPERM' || error.code === 'EACCES')) return true

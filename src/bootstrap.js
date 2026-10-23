@@ -27,7 +27,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join, resolve } from 'node:path'
 import { isProcessAlive } from './util.js'
@@ -240,6 +240,14 @@ export function npmCliPath() {
         const cli = join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js')
         if (existsSync(cli)) return cli
       } else {
+        try {
+          const resolved = realpathSync(candidate)
+          if (resolved.endsWith('npm-cli.js') || /\.m?js$/i.test(resolved)) return resolved
+        } catch {
+          /* ignore */
+        }
+        const adjacent = join(dir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')
+        if (existsSync(adjacent)) return adjacent
         return candidate
       }
     }

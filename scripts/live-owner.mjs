@@ -6,15 +6,20 @@
  * a running harness looks like from the outside. A second process that shares
  * the same state directory must adopt this engine, never reap it.
  *
- * Usage: node scripts/live-owner.mjs <baseUrl> <stateDir>
+ * Usage: node scripts/live-owner.mjs <baseUrl> <stateDir> [repoPath]
  */
 import { CamofoxEngine, resolveConfig } from '../src/engine.js'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
-const [baseUrl, stateDir] = process.argv.slice(2)
+const [baseUrl, stateDir, explicitRepo] = process.argv.slice(2)
+const defaultRepo = process.env.CAMOFOX_REPO ?? (process.env.DSH_HOME ? join(process.env.DSH_HOME, 'camofox', 'repo') : join(homedir(), '.dsh', 'camofox', 'repo'))
+const repoPath = explicitRepo ?? defaultRepo
+
 const engine = new CamofoxEngine({
   config: resolveConfig({
     baseUrl,
-    repoPath: process.env.CAMOFOX_REPO ?? 'C:\\Users\\mirel\\Desktop\\GitHub\\camofox-browser',
+    repoPath,
     autostart: true,
     stateDir,
     startTimeoutMs: 150000,

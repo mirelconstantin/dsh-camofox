@@ -6,15 +6,20 @@
  * disposing, which is what a harness that was force-killed leaves behind: a
  * live engine plus a lock file naming it, owned by nobody.
  *
- * Usage: node scripts/orphan.mjs <baseUrl> <stateDir>
+ * Usage: node scripts/orphan.mjs <baseUrl> <stateDir> [repoPath]
  */
 import { CamofoxEngine, resolveConfig } from '../src/engine.js'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
-const [baseUrl, stateDir] = process.argv.slice(2)
+const [baseUrl, stateDir, explicitRepo] = process.argv.slice(2)
+const defaultRepo = process.env.CAMOFOX_REPO ?? (process.env.DSH_HOME ? join(process.env.DSH_HOME, 'camofox', 'repo') : join(homedir(), '.dsh', 'camofox', 'repo'))
+const repoPath = explicitRepo ?? defaultRepo
+
 const engine = new CamofoxEngine({
   config: resolveConfig({
     baseUrl,
-    repoPath: process.env.CAMOFOX_REPO ?? 'C:\\Users\\mirel\\Desktop\\GitHub\\camofox-browser',
+    repoPath,
     autostart: true,
     stateDir,
     startTimeoutMs: 150000,

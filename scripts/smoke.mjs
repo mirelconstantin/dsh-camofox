@@ -12,11 +12,12 @@ import { page as pageText } from '../src/util.js'
 import { mirrorSite } from '../src/mirror.js'
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+const defaultRepo = process.env.CAMOFOX_REPO ?? (process.env.DSH_HOME ? join(process.env.DSH_HOME, 'camofox', 'repo') : join(homedir(), '.dsh', 'camofox', 'repo'))
 const baseUrl = process.argv[2] ?? 'http://127.0.0.1:9476'
-const repoPath = process.argv[3] ?? 'C:\\Users\\mirel\\Desktop\\GitHub\\camofox-browser'
+const repoPath = process.argv[3] ?? defaultRepo
 const lines = []
 let failures = 0
 
@@ -83,7 +84,7 @@ function assert(value, message) {
 const engine = new CamofoxEngine({
   // Its own port and its own supervised engine, so running this never touches
   // the engine a live harness is using.
-  config: resolveConfig({ baseUrl, repoPath, autostart: true, userId: 'dsh-smoke', stateDir: `${process.env.TEMP}\\dsh-camofox-smoke` }),
+  config: resolveConfig({ baseUrl, repoPath, autostart: true, userId: 'dsh-smoke', stateDir: join(tmpdir(), 'dsh-camofox-smoke') }),
   log: (message) => lines.push(`  log: ${message}`),
 })
 const bridge = new CamofoxBridge(engine)
