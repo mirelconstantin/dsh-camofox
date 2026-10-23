@@ -17,7 +17,7 @@
  * @module dsh-camofox/addons
  */
 
-import { lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** Engine plugin directory name this module owns. */
@@ -207,8 +207,13 @@ export function register(app, ctx) {
  * @returns {{ installed: boolean, reason?: string, configPath: string }} the outcome.
  */
 export function writeEnginePlugin(repoPath, name, generate, marker) {
-  const configPath = join(repoPath, 'camofox.config.json')
-  const pluginPath = join(repoPath, 'plugins', name, 'index.js')
+  let targetDir = repoPath
+  const candidate = join(targetDir, 'node_modules', '@askjo', 'camofox-browser')
+  if (existsSync(join(candidate, 'camofox.config.json'))) {
+    targetDir = candidate
+  }
+  const configPath = join(targetDir, 'camofox.config.json')
+  const pluginPath = join(targetDir, 'plugins', name, 'index.js')
 
   let config
   try {
@@ -248,7 +253,7 @@ export function writeEnginePlugin(repoPath, name, generate, marker) {
   }
 
   try {
-    mkdirSync(join(repoPath, 'plugins', name), { recursive: true })
+    mkdirSync(join(targetDir, 'plugins', name), { recursive: true })
     if (existing !== generated) writeFileSync(pluginPath, generated, 'utf-8')
   } catch (error) {
     return { installed: false, reason: `cannot write ${pluginPath}: ${error.message}`, configPath }

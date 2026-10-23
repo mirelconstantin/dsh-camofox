@@ -101,6 +101,19 @@ export function register(app, ctx) {
   process.on('SIGINT', () => cleanupAndExit('SIGINT'))
   process.on('SIGHUP', () => cleanupAndExit('SIGHUP'))
   process.on('exit', () => killChildren())
+
+  // 4. Protect against page.setViewportSize hang in Camoufox (anti-fingerprint pinning)
+  if (ctx && ctx.events) {
+    ctx.events.on('tab:created', ({ page }) => {
+      if (page && typeof page.setViewportSize === 'function') {
+        const orig = page.setViewportSize.bind(page)
+        page.setViewportSize = (size) => Promise.race([
+          orig(size).catch(() => {}),
+          new Promise((resolve) => setTimeout(resolve, 300)),
+        ])
+      }
+    })
+  }
 }
 `
 }

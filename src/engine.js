@@ -14,8 +14,9 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { configChunkSize } from './addons.js'
+import { configChunkSize, writeEnginePlugin } from './addons.js'
 import { ensureEngine } from './bootstrap.js'
+import { GENERATED_LIFECYCLE_MARKER, LIFECYCLE_PLUGIN_NAME, lifecyclePluginSource } from './lifecycle-plugin.js'
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
@@ -1072,6 +1073,17 @@ export class CamofoxEngine {
       // (`server.js:1181`), which is how uBlock Origin is suppressed.
       ...(this.config.disableDefaultAddons ? { CAMOFOX_DISABLE_DEFAULT_ADDONS: '1' } : {}),
     })
+
+    try {
+      writeEnginePlugin(
+        repo,
+        LIFECYCLE_PLUGIN_NAME,
+        () => lifecyclePluginSource(),
+        GENERATED_LIFECYCLE_MARKER,
+      )
+    } catch {
+      // Best-effort; do not block spawn
+    }
 
     const child = this.procs.spawn(this.config.nodePath || process.execPath, [entry], {
       cwd: repo,

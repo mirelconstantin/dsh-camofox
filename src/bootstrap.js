@@ -160,6 +160,16 @@ export async function ensureEngine({
     const afterLock = resolveEntry(repoPath, entry)
     if (existsSync(afterLock)) return afterLock
 
+    // Create an isolated package.json so npm never walks up parent directories into a pnpm workspace
+    const pkgJsonPath = join(repoPath, 'package.json')
+    if (!existsSync(pkgJsonPath)) {
+      try {
+        writeFileSync(pkgJsonPath, JSON.stringify({ name: 'camofox-runtime', private: true }, null, 2) + '\n', 'utf8')
+      } catch {
+        /* best effort */
+      }
+    }
+
     log(`installing ${ENGINE_PACKAGE}@${ENGINE_VERSION} into ${repoPath}`)
     const spec = `${ENGINE_PACKAGE}@${ENGINE_VERSION}`
     if (!npmCli) {
@@ -170,7 +180,7 @@ export async function ensureEngine({
     }
     const install = await run(
       npmPath,
-      [npmCli, 'install', spec, '--omit=dev', '--no-audit', '--no-fund', '--loglevel=error'],
+      [npmCli, 'install', spec, '--omit=dev', '--no-audit', '--no-fund', '--ignore-scripts', '--loglevel=error'],
       { cwd: repoPath, signal, timeoutMs },
     )
     if (install.code !== 0) {
@@ -180,6 +190,18 @@ export async function ensureEngine({
     if (!existsSync(installed)) {
       throw new Error(`${ENGINE_PACKAGE}@${ENGINE_VERSION} installed but ${installed} is missing`)
     }
+
+    // Ensure camofox.config.json exists at root of repoPath so plugins can be registered
+    const rootConfig = join(repoPath, 'camofox.config.json')
+    const engineConfig = join(engineDir(repoPath), 'camofox.config.json')
+    if (!existsSync(rootConfig) && existsSync(engineConfig)) {
+      try {
+        writeFileSync(rootConfig, readFileSync(engineConfig, 'utf8'), 'utf8')
+      } catch {
+        /* best effort */
+      }
+    }
+
     return installed
   }, { timeoutMs })
 

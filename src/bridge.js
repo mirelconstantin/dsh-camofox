@@ -1311,7 +1311,7 @@ export class CamofoxBridge {
       width: clampInt(args.width, 1280, 200, 7680),
       height: clampInt(args.height, 800, 200, 4320),
     }
-    const result = await this.call('POST', `/tabs/${encodeURIComponent(tabId)}/viewport`, body, { signal, retry: true })
+    const result = await this.call('POST', `/tabs/${encodeURIComponent(tabId)}/viewport`, body, { signal, retry: true, timeoutMs: 5000 })
     this.#touch(scope, tabId)
     return result
   }
